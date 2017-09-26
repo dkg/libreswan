@@ -3,3 +3,4 @@
 0003-update-README.nss-to-match-debian-defaults-for-IPSEC.patch
 bugfix-853947/0010-Try-to-include-the-correct-headers-on-MIPS.patch
 0005-fix-speling.patch
+0006-move-to-python3-scripts-are-compatible.patch
