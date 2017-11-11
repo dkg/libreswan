@@ -1,3 +1,13 @@
+libreswan (3.22-1) unstable; urgency=medium
+
+  * new upstream release
+  * drop patches already applied upstream
+  * include two new patches as requested by upstream
+  * include ipsec version from upstream release (Closes: #879614)
+  * Standards-Version: bump to 4.1.1 (no changes needed)
+
+ -- Daniel Kahn Gillmor <dkg@fifthhorseman.net>  Sat, 11 Nov 2017 14:02:02 +0800
+
 libreswan (3.21-2) unstable; urgency=medium
 
   [ Antony Antony ]
