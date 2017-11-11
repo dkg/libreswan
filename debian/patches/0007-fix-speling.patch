@@ -1,0 +1,21 @@
+From: Daniel Kahn Gillmor <dkg@fifthhorseman.net>
+Date: Sat, 11 Nov 2017 14:38:11 +0800
+Subject: fix speling
+
+---
+ programs/pluto/ikev2.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/programs/pluto/ikev2.c b/programs/pluto/ikev2.c
+index 0298378..4938cc4 100644
+--- a/programs/pluto/ikev2.c
++++ b/programs/pluto/ikev2.c
+@@ -782,7 +782,7 @@ static bool ikev2_collect_fragment(struct msg_digest *md, struct state *st)
+ 	 * so-far being discarded; always check/fix frags.
+ 	 */
+ 	if (st->st_v2_rfrags == NULL) {
+-		st->st_v2_rfrags = alloc_thing(struct v2_ike_rfrags, "incomming v2_ike_rfrags");
++		st->st_v2_rfrags = alloc_thing(struct v2_ike_rfrags, "incoming v2_ike_rfrags");
+ 		st->st_v2_rfrags->total = skf->isaskf_total;
+ 	}
+ 

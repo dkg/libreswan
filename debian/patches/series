@@ -4,3 +4,4 @@
 0006-move-to-python3-scripts-are-compatible.patch
 0005-pluto-In-delete_state-for-IPsec-SA-pull-latest-count.patch
 0006-pluto-fix-IS_IPSEC_SA_ESTABLISHED.patch
+0007-fix-speling.patch
