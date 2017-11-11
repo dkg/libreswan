@@ -1,0 +1,29 @@
+From: Paul Wouters <pwouters@redhat.com>
+Date: Wed, 25 Oct 2017 17:34:23 -0400
+Subject: pluto: In delete_state() for IPsec SA,
+ pull latest counters from kernel
+
+(cherry picked from commit f075e754796038aa971913590d5759588c2616f7)
+---
+ programs/pluto/state.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/programs/pluto/state.c b/programs/pluto/state.c
+index 7d2aac6..2402745 100644
+--- a/programs/pluto/state.c
++++ b/programs/pluto/state.c
+@@ -855,6 +855,14 @@ void delete_state(struct state *st)
+ 	}
+ 
+ 	if (IS_IPSEC_SA_ESTABLISHED(st->st_state)) {
++		/* pull in the traffic counters into state before they're lost */
++		if (!get_sa_info(st, FALSE, NULL)) {
++			libreswan_log("failed to pull traffic counters from outbound IPsec SA");
++		}
++		if (!get_sa_info(st, TRUE, NULL)) {
++			libreswan_log("failed to pull traffic counters from inbound IPsec SA");
++		}
++
+ 		/*
+ 		 * Note that a state/SA can have more then one of
+ 		 * ESP/AH/IPCOMP
