@@ -21,6 +21,7 @@ endif
 
 override_dh_auto_build:
 	$(MAKE) programs \
+		IPSECVERSION=$(DEB_VERSION_UPSTREAM) \
 		INC_USRLOCAL=/usr \
 		FINALLIBEXECDIR=/usr/lib/ipsec \
 		PUBDIR=/usr/sbin \
