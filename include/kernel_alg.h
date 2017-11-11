@@ -20,32 +20,8 @@
 #define _KERNEL_ALG_H
 #include "libreswan/pfkeyv2.h"
 
+struct ike_alg; /* forward declaration */
 struct sadb_msg; /* forward definition */
-
-struct kernel_alg_info {
-	/*
-	 * The encryption algorithm and key length; if required by
-	 * ESP.
-	 *
-	 * Because struct encrypt_desc still specifies multiple key
-	 * lengths, ENCKEYSIZE is still required.
-	 */
-	u_int8_t transid;       /* enum ipsec_cipher_algo: ESP transform (AES, 3DES, etc.)*/
-	size_t enckeysize;      /* keylength for ESP transform (bytes) */
-	/*
-	 * The authentication algorithm; if required by ESP/AH.
-	 */
-	u_int16_t auth;         /* enum ikev1_auth_attribute: AUTH */
-	/*
-	 * The above mapped onto SADB/KLIPS/PFKEYv2 equivalent and
-	 * used by the kernel backends.
-	 */
-	u_int8_t encryptalg;    /* enum sadb_ealg: normally  encryptalg=transid */
-	u_int16_t authalg;	/* enum sadb_aalg: normally  authalg=auth+1
-				 * Paul: apparently related to magic at
-				 * lib/libswan/alg_info.c alg_info_esp_aa2sadb()
-				 */
-};
 
 /* Registration messages from pluto */
 extern void kernel_alg_register_pfkey(const struct sadb_msg *msg);
@@ -55,9 +31,14 @@ struct esp_info;	/* forward declaration */
 struct alg_info_ike;	/* forward declaration */
 struct alg_info_esp;	/* forward declaration */
 
+extern bool kernel_alg_is_ok(const struct ike_alg *alg);
+
+extern bool kernel_alg_dh_ok(const struct oakley_group_desc *dh);
+extern bool kernel_alg_encrypt_ok(const struct encrypt_desc *encrypt);
+extern bool kernel_alg_integ_ok(const struct integ_desc *integ);
+
 /* ESP interface */
 extern struct sadb_alg *kernel_alg_esp_sadb_alg(int alg_id);
-extern int kernel_alg_esp_ivlen(int alg_id);
 
 /* returns success (NULL) if encrypt alg is present in kernel */
 extern err_t check_kernel_encrypt_alg(int alg_id, unsigned int key_len);
@@ -65,27 +46,12 @@ extern err_t check_kernel_encrypt_alg(int alg_id, unsigned int key_len);
 /* returns encrypt keylen in BYTES for esp enc alg passed */
 extern int kernel_alg_esp_enc_max_keylen(int alg_id);
 
-/* returns bool success if esp auth alg is present  */
-extern bool kernel_alg_esp_auth_ok(int auth, struct alg_info_esp *nfo);
-
-extern int kernel_alg_ah_auth_keylen(int auth);
-
-extern bool kernel_alg_ah_auth_ok(int auth, struct alg_info_esp *alg_info);
-
-/* returns auth keylen in BYTES for esp auth alg passed */
-extern int kernel_alg_esp_auth_keylen(int auth);
-
-/* returns TRUE if read ok from /proc/net/pf_key_supported */
-extern bool kernel_alg_proc_read(void);
-
 /* get sadb_alg for passed args */
 extern const struct sadb_alg *kernel_alg_sadb_alg_get(unsigned satype, unsigned exttype,
 						       unsigned alg_id);
 
-extern bool kernel_alg_info(u_int8_t transid,
-			    u_int16_t keylen,
-			    u_int16_t auth,
-			    struct kernel_alg_info *ki);
+bool kernel_alg_encrypt_key_size(const struct encrypt_desc *encrypt,
+				 int keylen, size_t *key_size);
 
 extern struct sadb_alg esp_aalg[];
 extern struct sadb_alg esp_ealg[];
@@ -115,22 +81,9 @@ extern void kernel_alg_init(void);
 extern int kernel_alg_add(int satype, int exttype,
 			  const struct sadb_alg *sadb_alg);
 
-struct integ_desc;
+void kernel_integ_add(const struct integ_desc *integ);
+void kernel_encrypt_add(const struct encrypt_desc *encrypt);
 
-struct kernel_integ {
-	enum sadb_aalg sadb_aalg;
-	const struct integ_desc *integ;
-	const char *netlink_name;
-	struct kernel_integ *next;
-};
-
-void kernel_integ_add(enum sadb_aalg aalg, const struct integ_desc *integ,
-		      const char *netkey);
-
-const struct kernel_integ *kernel_integ_by_sadb_aalg(enum sadb_aalg aalg);
-const struct kernel_integ *kernel_integ_by_ikev1_auth_attribute(enum ikev1_auth_attribute auth);
-
-extern enum ipsec_authentication_algo alg_info_esp_aa2sadb(enum ikev1_auth_attribute auth);
 extern int alg_info_esp_sadb2aa(int sadb_aalg);
 
 #endif /* _KERNEL_ALG_H */

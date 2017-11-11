@@ -44,6 +44,7 @@
 #include "libreswan/pfkey.h"
 #include "libreswan/pfkeyv2.h"
 #include "pfkey_help.h"
+#include "libreswan/pfkey_debug.h"
 
 #include "libreswan/ipsec_tunnel.h"
 
@@ -172,6 +173,8 @@ int debug = 0;
 int main(int argc, char *argv[])
 {
 	tool_init_log(argv[0]);
+	/* force pfkey logging */
+	pfkey_error_func = pfkey_debug_func = printf;
 
 	struct ifreq ifr;
 	struct ipsectunnelconf shc;
@@ -231,10 +234,10 @@ int main(int argc, char *argv[])
 			break;
 
 		case 'V':
-			strncpy(ifr.ifr_name, optarg, sizeof(ifr.ifr_name));
+			fill_and_terminate(ifr.ifr_name, optarg, sizeof(ifr.ifr_name));
 			break;
 		case 'P':
-			strncpy(shc.cf_name, optarg, sizeof(shc.cf_name));
+			fill_and_terminate(shc.cf_name, optarg, sizeof(shc.cf_name));
 			break;
 		case 'l':
 		{
@@ -307,7 +310,7 @@ int main(int argc, char *argv[])
 		}
 		break;
 	case IPSEC_CLR_DEV:
-		strncpy(ifr.ifr_name, "ipsec0", sizeof(ifr.ifr_name));
+		fill_and_terminate(ifr.ifr_name, "ipsec0", sizeof(ifr.ifr_name));
 		break;
 	default:
 		fprintf(stderr, "%s: exactly one of '--attach', '--detach' or '--clear' options must be specified.\n"

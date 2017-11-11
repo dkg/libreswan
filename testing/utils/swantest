@@ -1072,7 +1072,7 @@ class scantests:
 
     def do_diffstat(self, goodc, newc):
 
-        diffcmd = 'diff  -N -u'
+        diffcmd = 'diff  -w -N -u'
 
         diffr = ''
         cmd = diffcmd + ' ' + goodc + ' ' + newc + ' | diffstat -f 0'
@@ -2104,6 +2104,7 @@ def docker_run_script(host, testname, script, timer=90):
 
         output = output.decode('ascii')
         output = output.replace('\r', '')
+        output = output.rstrip(' ') + '\n'
         f_log.writelines(output + prompt)
     f_log.close()
     f_cmds.close()

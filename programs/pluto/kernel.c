@@ -11,7 +11,7 @@
  * Copyright (C) 2010,2013 D. Hugh Redelmeier <hugh@mimosa.com>
  * Copyright (C) 2012-2015 Paul Wouters <paul@libreswan.org>
  * Copyright (C) 2013 Kim B. Heino <b@bbbs.net>
- * Copyright (C) 2016, Andrew Cagney <cagney@gnu.org>
+ * Copyright (C) 2016-2017, Andrew Cagney
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -59,7 +59,7 @@
 #include "kernel.h"
 #include "kernel_netlink.h"
 #include "kernel_pfkey.h"
-#include "kernel_noklips.h"
+#include "kernel_nokernel.h"
 #include "kernel_bsdkame.h"
 #include "packet.h"
 #include "x509.h"
@@ -70,7 +70,10 @@
 #include "server.h"
 #include "whack.h"      /* for RC_LOG_SERIOUS */
 #include "keys.h"
+
 #include "ike_alg.h"
+#include "ike_alg_3des.h"
+#include "ike_alg_sha2.h"
 
 #include "packet.h"  /* for pb_stream in nat_traversal.h */
 #include "nat_traversal.h"
@@ -92,8 +95,6 @@ static void set_text_said(char *text_said,
 			  const ip_address *dst,
 			  ipsec_spi_t spi,
 			  int proto);
-static unsigned ikev1_auth_kernel_attrs(enum ikev1_auth_attribute auth,
-					int *alg);
 
 const struct pfkey_proto_info null_proto_info[2] = {
 	{
@@ -655,12 +656,12 @@ int fmt_common_shell_out(char *buf, int blen, const struct connection *c,
 		c->vti_routing ? "yes" : "no",
 		c->vti_shared ? "yes" : "no",
 		catstr,
-		st == NULL ? 0 : st->st_esp.present ? st->st_esp.attrs.spi :
-			st->st_ah.present ? st->st_ah.attrs.spi :
-			st->st_ipcomp.present ? st->st_ipcomp.attrs.spi : 0,
-		st == NULL ? 0 : st->st_esp.present ? st->st_esp.our_spi :
-			st->st_ah.present ? st->st_ah.our_spi :
-			st->st_ipcomp.present ? st->st_ipcomp.our_spi : 0
+		st == NULL ? 0 : st->st_esp.present ? ntohl(st->st_esp.attrs.spi) :
+			st->st_ah.present ? ntohl(st->st_ah.attrs.spi) :
+			st->st_ipcomp.present ? ntohl(st->st_ipcomp.attrs.spi) : 0,
+		st == NULL ? 0 : st->st_esp.present ? ntohl(st->st_esp.our_spi) :
+			st->st_ah.present ? ntohl(st->st_ah.our_spi) :
+			st->st_ipcomp.present ? ntohl(st->st_ipcomp.our_spi) : 0
 		);
 	/*
 	 * works for both old and new way of snprintf() returning
@@ -675,6 +676,16 @@ bool do_command(const struct connection *c,
 		struct state *st)
 {
 	const char *verb_suffix;
+
+	/*
+	 * Support for skipping updown, eg leftupdown=""
+	 * Useful on busy servers that do not need to use updown for anything
+	 */
+	if (sr->this.updown == NULL || streq(sr->this.updown, "%disabled")) {
+		DBG(DBG_CONTROL, DBG_log("skipped updown %s command - disabled per policy", verb));
+		return TRUE;
+	}
+	DBG(DBG_CONTROL, DBG_log("running updown command \"%s\" for verb %s ", sr->this.updown, verb));
 
 	/*
 	 * Figure out which verb suffix applies.
@@ -713,9 +724,6 @@ bool do_command(const struct connection *c,
 	return TRUE;
 }
 
-#include <signal.h>
-typedef void (*sighandler_t)(int);	/* GNU extension would define this */
-
 bool invoke_command(const char *verb, const char *verb_suffix, const char *cmd)
 {
 #	define CHUNK_WIDTH	80	/* units for cmd logging */
@@ -743,7 +751,6 @@ bool invoke_command(const char *verb, const char *verb_suffix, const char *cmd)
 		 * Any used by library routines (perhaps the resolver or
 		 * syslog) will remain.
 		 */
-		sighandler_t savesig = signal(SIGCHLD, SIG_DFL);
 		FILE *f = popen(cmd, "r");
 
 		if (f == NULL) {
@@ -764,7 +771,6 @@ bool invoke_command(const char *verb, const char *verb_suffix, const char *cmd)
 #endif
 			loglog(RC_LOG_SERIOUS, "unable to popen %s%s command",
 				verb, verb_suffix);
-			signal(SIGCHLD, savesig);
 			return FALSE;
 		}
 
@@ -780,7 +786,6 @@ bool invoke_command(const char *verb, const char *verb_suffix, const char *cmd)
 				if (ferror(f)) {
 					LOG_ERRNO(errno, "fgets failed on output of %s%s command",
 						  verb, verb_suffix);
-					signal(SIGCHLD, savesig);
 					return FALSE;
 				} else {
 					passert(feof(f));
@@ -799,7 +804,6 @@ bool invoke_command(const char *verb, const char *verb_suffix, const char *cmd)
 		/* report on and react to return code */
 		{
 			int r = pclose(f);
-			signal(SIGCHLD, savesig);
 
 			if (r == -1) {
 				LOG_ERRNO(errno, "pclose failed for %s%s command",
@@ -1714,22 +1718,26 @@ static bool del_spi(ipsec_spi_t spi, int proto,
 	return kernel_ops->del_sa(&sa);
 }
 
+#ifdef USE_NIC_OFFLOAD
 static void setup_esp_nic_offload(struct kernel_sa *sa, struct connection *c,
 		bool *nic_offload_fallback)
 {
 	if (c->nic_offload == nic_offload_no)
 		return;
+
 	if (c->interface == NULL || c->interface->ip_dev == NULL ||
 		c->interface->ip_dev->id_rname == NULL)
 		return;
 
 	if (c->nic_offload == nic_offload_auto) {
-		if (c->interface->ip_dev->id_nic_offload != IFNO_SUPPORTED)
+		if (!c->interface->ip_dev->id_nic_offload)
 			return;
+
 		*nic_offload_fallback = TRUE;
 	}
 	sa->nic_offload_dev = c->interface->ip_dev->id_rname;
 }
+#endif
 
 /*
  * Set up one direction of the SA bundle
@@ -1749,8 +1757,10 @@ static bool setup_half_ipsec_sa(struct state *st, bool inbound)
 	bool incoming_ref_set = FALSE;
 	IPsecSAref_t refhim = st->st_refhim;
 	IPsecSAref_t new_refhim = IPSEC_SAREF_NULL;
-	bool nic_offload_fallback = FALSE;
 	bool ret;
+#ifdef USE_NIC_OFFLOAD
+	bool nic_offload_fallback = FALSE;
+#endif
 
 	/* SPIs, saved for spigrouping or undoing, if necessary */
 	struct kernel_sa said[EM_MAXRELSPIS];
@@ -1925,16 +1935,15 @@ static bool setup_half_ipsec_sa(struct state *st, bool inbound)
 			spi;
 		unsigned compalg;
 
-		switch (st->st_ipcomp.attrs.transattrs.encrypt) {
+		switch (st->st_ipcomp.attrs.transattrs.ta_comp) {
 		case IPCOMP_DEFLATE:
 			compalg = SADB_X_CALG_DEFLATE;
 			break;
 
 		default:
 			loglog(RC_LOG_SERIOUS,
-				"IPCOMP transform %s not implemented",
-				enum_name(&ipcomp_transformid_names,
-					st->st_ipcomp.attrs.transattrs.encrypt));
+			       "IPCOMP transform %s not implemented",
+			       st->st_ipcomp.attrs.transattrs.ta_encrypt->common.fqn);
 			goto fail;
 		}
 
@@ -1943,7 +1952,7 @@ static bool setup_half_ipsec_sa(struct state *st, bool inbound)
 		*said_next = said_boilerplate;
 		said_next->spi = ipcomp_spi;
 		said_next->esatype = ET_IPCOMP;
-		said_next->encalg = compalg;
+		said_next->compalg = compalg;
 		said_next->encapsulation = encap_oneshot;
 		said_next->reqid = reqid_ipcomp(c->spd.reqid);
 		said_next->text_said = text_ipcomp;
@@ -1994,97 +2003,6 @@ static bool setup_half_ipsec_sa(struct state *st, bool inbound)
 			peer_keymat;
 		const struct trans_attrs *ta = &st->st_esp.attrs.transattrs;
 
-		/*
-		 * ??? table of non-registered algorithms?
-		 *
-		 * Looks like a hardwired and limited map from ESP/AH
-		 * to SADB (KLIPS).
-		 *
-		 * Since the allowed combinations are fixed, limited
-		 * and old (anything recent is instead handled by
-		 * kernel_alg_esp_info()) it may well be possible to
-		 * delete this table.
-		 */
-		static const struct kernel_alg_info hardwired_info[] = {
-			{
-				.transid = ESP_NULL,
-				.auth = AUTH_ALGORITHM_HMAC_MD5,
-				.enckeysize = 0,
-				.encryptalg = SADB_EALG_NULL,
-				.authalg = SADB_AALG_MD5HMAC,
-			},
-			{
-				.transid = ESP_NULL,
-				.auth = AUTH_ALGORITHM_HMAC_SHA1,
-				.enckeysize = 0,
-				.encryptalg = SADB_EALG_NULL,
-				.authalg = SADB_AALG_SHA1HMAC,
-			},
-			{
-				.transid = ESP_3DES,
-				.auth = AUTH_ALGORITHM_NONE,
-				.enckeysize = DES_CBC_BLOCK_SIZE * 3,
-				.encryptalg = SADB_EALG_3DESCBC,
-				.authalg = SADB_AALG_NONE,
-			},
-			{
-				.transid = ESP_3DES,
-				.auth = AUTH_ALGORITHM_HMAC_MD5,
-				.enckeysize = DES_CBC_BLOCK_SIZE * 3,
-				.encryptalg = SADB_EALG_3DESCBC,
-				.authalg = SADB_AALG_MD5HMAC,
-			},
-			{
-				.transid = ESP_3DES,
-				.auth = AUTH_ALGORITHM_HMAC_SHA1,
-				.enckeysize = DES_CBC_BLOCK_SIZE * 3,
-				.encryptalg = SADB_EALG_3DESCBC,
-				.authalg = SADB_AALG_SHA1HMAC,
-			},
-			{
-				.transid = ESP_AES,
-				.auth = AUTH_ALGORITHM_NONE,
-				.enckeysize = AES_CBC_BLOCK_SIZE,
-				.encryptalg = SADB_X_EALG_AESCBC,
-				.authalg = SADB_AALG_NONE,
-			},
-			{
-				.transid = ESP_AES,
-				.auth = AUTH_ALGORITHM_HMAC_MD5,
-				.enckeysize = AES_CBC_BLOCK_SIZE,
-				.encryptalg = SADB_X_EALG_AESCBC,
-				.authalg = SADB_AALG_MD5HMAC,
-			},
-			{
-				.transid = ESP_AES,
-				.auth = AUTH_ALGORITHM_HMAC_SHA1,
-				.enckeysize = AES_CBC_BLOCK_SIZE,
-				.encryptalg = SADB_X_EALG_AESCBC,
-				.authalg = SADB_AALG_SHA1HMAC,
-			},
-			{
-				.transid = ESP_CAST,
-				.auth = AUTH_ALGORITHM_NONE,
-				.enckeysize = BYTES_FOR_BITS(CAST_KEY_DEF_LEN),
-				.encryptalg = SADB_X_EALG_CASTCBC,
-				.authalg = SADB_AALG_NONE,
-			},
-			{
-				.transid = ESP_CAST,
-				.auth = AUTH_ALGORITHM_HMAC_MD5,
-				.enckeysize = BYTES_FOR_BITS(CAST_KEY_DEF_LEN),
-				.encryptalg = SADB_X_EALG_CASTCBC,
-				.authalg = SADB_AALG_MD5HMAC,
-			},
-			{
-				.transid = ESP_CAST,
-				.auth = AUTH_ALGORITHM_HMAC_SHA1,
-				.enckeysize = BYTES_FOR_BITS(CAST_KEY_DEF_LEN),
-				.encryptalg = SADB_X_EALG_CASTCBC,
-				.authalg = SADB_AALG_SHA1HMAC,
-			},
-		};
-
 		u_int8_t natt_type = 0;
 		u_int16_t natt_sport = 0, natt_dport = 0;
 		ip_address natt_oa;
@@ -2102,114 +2020,71 @@ static bool setup_half_ipsec_sa(struct state *st, bool inbound)
 		}
 
 		DBG(DBG_CONTROL,
-			DBG_log("looking for alg with transid: %d keylen: %d auth: %d",
-				ta->encrypt, ta->enckeylen, ta->integ_hash));
+			DBG_log("looking for alg with encrypt: %s keylen: %d integ: %s",
+				ta->ta_encrypt->common.fqn, ta->enckeylen, ta->ta_integ->common.fqn));
 
-		const struct kernel_alg_info *ei = NULL;
-		struct kernel_alg_info ki = { .transid = 0, }; /* RHEL-6 GCC breakage */
-		for (ei = hardwired_info; ; ei++) {
-
-			/* if it is the last key entry, then ask algo */
-			if (ei == &hardwired_info[elemsof(hardwired_info)]) {
-				/*
-				 * Check for additional kernel alg
-				 * Note: result will be in a static buffer!
-				 */
-				struct esb_buf buftn, bufan;
-
-				if (kernel_alg_info(ta->encrypt,
-						     ta->enckeylen,
-						     ta->integ_hash,
-						     &ki)) {
-					ei = &ki;
-					break;
-				}
-
-				loglog(RC_LOG_SERIOUS,
-					"ESP transform %s(%d) / auth %s not implemented or allowed",
-					enum_showb(&esp_transformid_names,
-						ta->encrypt,
-						&buftn),
-					ta->enckeylen,
-					enum_showb(&auth_alg_names,
-						ta->integ_hash,
-						&bufan));
-				goto fail;
-			}
-
-			DBG(DBG_CRYPT,
-				DBG_log("checking transid: %d keysize: %zu auth: %d",
-					ei->transid, ei->enckeysize, ei->auth));
-
-			if (ta->encrypt == ei->transid &&
-				(ta->enckeylen == 0 ||
-					ta->enckeylen ==
-					ei->enckeysize * BITS_PER_BYTE) &&
-				ta->integ_hash == ei->auth)
-				break;
+		/*
+		 * Check that both integrity and encryption are
+		 * supported by the kernel.
+		 *
+		 * Since the parser uses these exact same checks when
+		 * loading the connection, they should never fail (if
+		 * they do then strange things have been going on
+		 * since the connection was loaded).
+		 */
+		if (!kernel_alg_integ_ok(ta->ta_integ)) {
+			loglog(RC_LOG_SERIOUS,
+			       "ESP integrity algorithm %s is not implemented or allowed",
+			       ta->ta_integ->common.fqn);
+			goto fail;
+		}
+		if (!kernel_alg_encrypt_ok(ta->ta_encrypt)) {
+			loglog(RC_LOG_SERIOUS,
+			       "ESP encryption algorithm %s is not implemented or allowed",
+			       ta->ta_encrypt->common.fqn);
+			goto fail;
 		}
 
-		u_int16_t enc_key_len = ta->enckeylen / BITS_PER_BYTE;
-
-		if (enc_key_len != 0) {
-			/* XXX: must change to check valid _range_ enc_key_len */
-			if (enc_key_len > ei->enckeysize) {
-				loglog(RC_LOG_SERIOUS,
-					"ESP transform %s passed encryption key length %u; we expected %u or less",
-					enum_name(&esp_transformid_names,
-						ta->encrypt),
-					(unsigned)enc_key_len,
-					(unsigned)ei->enckeysize);
-				goto fail;
-			}
-			/* ??? why would we have a different length? */
-			pexpect(enc_key_len == ei->enckeysize);
-		} else {
-			enc_key_len = ei->enckeysize;
+		/*
+		 * Validate the encryption key size.
+		 */
+		size_t encrypt_keymat_size;
+		if (!kernel_alg_encrypt_key_size(ta->ta_encrypt, ta->enckeylen,
+						 &encrypt_keymat_size)) {
+			loglog(RC_LOG_SERIOUS,
+			       "ESP encryption algorithm %s with key length %d not implemented or allowed",
+			       ta->ta_encrypt->common.fqn, ta->enckeylen);
+			goto fail;
 		}
 
 		/* Fixup key lengths for special cases */
-		switch (ei->transid) {
-		case ESP_3DES:
+#ifdef USE_3DES
+		if (ta->ta_encrypt == &ike_alg_encrypt_3des_cbc) {
 			/* Grrrrr.... f*cking 7 bits jurassic algos  */
 			/* 168 bits in kernel, need 192 bits for keymat_len */
-			if (enc_key_len == 21)
-				enc_key_len = 24;
-			break;
-		case ESP_DES:
-			/* Grrrrr.... f*cking 7 bits jurassic algos  */
-			/* 56 bits in kernel, need 64 bits for keymat_len */
-			if (enc_key_len == 7)
-				enc_key_len = 8;
-			break;
+			if (encrypt_keymat_size == 21) {
+				DBG(DBG_KERNEL,
+				    DBG_log("%s requires a 7-bit jurassic adjust",
+					    ta->ta_encrypt->common.fqn));
+				encrypt_keymat_size = 24;
+			}
+		}
+#endif
 
-		case IKEv2_ENCR_AES_CTR:
-			/* keymat contains 4 bytes of salt */
-			enc_key_len += AES_CTR_SALT_BYTES;
-			break;
-
-		case IKEv2_ENCR_AES_GCM_8:
-		case IKEv2_ENCR_AES_GCM_12:
-		case IKEv2_ENCR_AES_GCM_16:
-			/* keymat contains 4 bytes of salt */
-			enc_key_len += AES_GCM_SALT_BYTES;
-			break;
-		case IKEv2_ENCR_AES_CCM_8:
-		case IKEv2_ENCR_AES_CCM_12:
-		case IKEv2_ENCR_AES_CCM_16:
-			/* keymat contains 3 bytes of salt */
-			enc_key_len += AES_CCM_SALT_BYTES;
-			break;
+		if (ta->ta_encrypt->salt_size > 0) {
+			DBG(DBG_KERNEL,
+			    DBG_log("%s requires %zu salt bytes",
+				    ta->ta_encrypt->common.fqn, ta->ta_encrypt->salt_size));
+			encrypt_keymat_size += ta->ta_encrypt->salt_size;
 		}
 
-		/* ??? why authkeylen but enc_key_len?  Spelling seems inconsistent. */
-		unsigned authkeylen = ikev1_auth_kernel_attrs(ei->auth, NULL);
+		size_t integ_keymat_size = ta->ta_integ->integ_keymat_size; /* BYTES */
 
 		DBG(DBG_KERNEL, DBG_log(
-			"st->st_esp.keymat_len=%" PRIu16 " is key_len=%" PRIu16 " + authkeylen=%u",
-			st->st_esp.keymat_len, enc_key_len, authkeylen));
+			"st->st_esp.keymat_len=%" PRIu16 " is encrypt_keymat_size=%zu + integ_keymat_size=%zu",
+			st->st_esp.keymat_len, encrypt_keymat_size, integ_keymat_size));
 
-		passert(st->st_esp.keymat_len == enc_key_len + authkeylen);
+		passert(st->st_esp.keymat_len == encrypt_keymat_size + integ_keymat_size);
 
 		set_text_said(text_esp, &dst.addr, esp_spi, SA_ESP);
 
@@ -2224,8 +2099,9 @@ static bool setup_half_ipsec_sa(struct state *st, bool inbound)
 			DBG(DBG_KERNEL, DBG_log("Enabling TFC at %d bytes (up to PMTU)", c->sa_tfcpad));
 			said_next->tfcpad = c->sa_tfcpad;
 		}
-		said_next->authalg = ei->authalg;
-		if (said_next->authalg == AUTH_ALGORITHM_HMAC_SHA2_256 &&
+
+		said_next->integ = ta->ta_integ;
+		if (said_next->integ == &ike_alg_integ_sha2_256 &&
 			st->st_connection->sha2_truncbug) {
 			if (kernel_ops->sha2_truncbug_support) {
 #ifdef FIPS_CHECK
@@ -2241,8 +2117,7 @@ static bool setup_half_ipsec_sa(struct state *st, bool inbound)
 				 * We need to tell the kernel to mangle
 				 * the sha2_256, as instructed by the user
 				 */
-				said_next->authalg =
-					AUTH_ALGORITHM_HMAC_SHA2_256_TRUNCBUG;
+				said_next->integ = &ike_alg_integ_hmac_sha2_256_truncbug;
 			} else {
 				loglog(RC_LOG_SERIOUS,
 					"Error: %s stack does not support sha2_truncbug=yes",
@@ -2250,28 +2125,36 @@ static bool setup_half_ipsec_sa(struct state *st, bool inbound)
 				goto fail;
 			}
 		}
+		said_next->authalg = said_next->integ->integ_ikev1_ah_transform;
 
 		if (st->st_esp.attrs.transattrs.esn_enabled == TRUE) {
 			DBG(DBG_KERNEL, DBG_log("Enabling ESN "));
 			said_next->esn = TRUE;
 		}
 
+		/*
+		 * XXX: Assume SADB_ and ESP_ numbers match!  Clearly
+		 * setting .compalg is wrong, don't yet trust
+		 * lower-level code to be right.
+		 *
+		 * XXX: The lack of trust was wise.  Removing the
+		 * assign causes compress-pluto-netkey-klips-04 to
+		 * fail.
+		 */
+		said_next->encrypt = ta->ta_encrypt;
+		said_next->compalg = said_next->encrypt->common.id[IKEv1_ESP_ID];
+
 		/* divide up keying material */
 		said_next->enckey = esp_dst_keymat;
-		said_next->enckeylen = enc_key_len;
-		said_next->encalg = ei->encryptalg;
-
-		said_next->authkey = esp_dst_keymat + enc_key_len;
-		said_next->authkeylen = authkeylen;
-		/* said_next->authkey = esp_dst_keymat + ei->enckeylen; */
-		/* said_next->enckeylen = ei->enckeylen; */
+		said_next->enckeylen = encrypt_keymat_size; /* BYTES */
+		said_next->authkey = esp_dst_keymat + encrypt_keymat_size;
+		said_next->authkeylen = integ_keymat_size; /* BYTES */
 
 		said_next->encapsulation = encap_oneshot;
 		said_next->reqid = reqid_esp(c->spd.reqid);
 
 		said_next->natt_sport = natt_sport;
 		said_next->natt_dport = natt_dport;
-		said_next->transid = ta->encrypt;
 		said_next->natt_type = natt_type;
 		said_next->natt_oa = &natt_oa;
 #ifdef KLIPS_MAST
@@ -2302,15 +2185,20 @@ static bool setup_half_ipsec_sa(struct state *st, bool inbound)
 			said_next->ref = refhim;
 			outgoing_ref_set = TRUE;
 		}
+#ifdef USE_NIC_OFFLOAD
 		setup_esp_nic_offload(said_next, c, &nic_offload_fallback);
+#endif
 
 		ret = kernel_ops->add_sa(said_next, replace);
+
+#ifdef USE_NIC_OFFLOAD
 		if (!ret && nic_offload_fallback &&
 			said_next->nic_offload_dev != NULL) {
 			/* Fallback to non-nic-offload crypto */
 			said_next->nic_offload_dev = NULL;
 			ret = kernel_ops->add_sa(said_next, replace);
 		}
+#endif
 		if (!ret) {
 			/* scrub keys from memory */
 			memset(said_next->enckey, 0, said_next->enckeylen);
@@ -2348,28 +2236,23 @@ static bool setup_half_ipsec_sa(struct state *st, bool inbound)
 		u_char *ah_dst_keymat =
 			inbound ? st->st_ah.our_keymat : st->st_ah.peer_keymat;
 
-
-	        /*
-		 * INTEG_HASH has type oakley_hash_t (a.k.a., "enum
-		 * ikev1_hash_attribute") yet here it is being treated
-		 * as ae "enum ikev1_auth_attribute".
-		 */
-		int authalg;
-		enum ikev1_auth_attribute auth = st->st_ah.attrs.transattrs.integ_hash;
-		unsigned key_len = ikev1_auth_kernel_attrs(auth, &authalg);
+		const struct integ_desc *integ = st->st_ah.attrs.transattrs.ta_integ;
+		size_t keymat_size = integ->integ_keymat_size;
+		int authalg = integ->integ_ikev1_ah_transform;
 		if (authalg <= 0) {
 			loglog(RC_LOG_SERIOUS, "%s not implemented",
-				enum_show(&auth_alg_names, auth));
+			       integ->common.fqn);
 			goto fail;
 		}
 
-		passert(st->st_ah.keymat_len == key_len);
+		passert(st->st_ah.keymat_len == keymat_size);
 
 		set_text_said(text_ah, &dst.addr, ah_spi, SA_AH);
 
 		*said_next = said_boilerplate;
 		said_next->spi = ah_spi;
 		said_next->esatype = ET_AH;
+		said_next->integ = integ;
 		said_next->authalg = authalg;
 		said_next->authkeylen = st->st_ah.keymat_len;
 		said_next->authkey = ah_dst_keymat;
@@ -2767,7 +2650,7 @@ void init_kernel(void)
 	case NO_KERNEL:
 		libreswan_log("Using 'no_kernel' interface code on %s",
 			kversion);
-		kernel_ops = &noklips_kernel_ops;
+		kernel_ops = &nokernel_kernel_ops;
 		break;
 
 	default:
@@ -2779,6 +2662,15 @@ void init_kernel(void)
 
 	if (kernel_ops->init != NULL)
 		kernel_ops->init();
+
+	/* Add the port bypass polcies */
+
+	if (kernel_ops->v6holes != NULL) {
+		if (!kernel_ops->v6holes()) {
+			libreswan_log("Could not add the ICMP bypass policies");
+			exit_pluto(PLUTO_EXIT_KERNEL_FAIL);
+		}
+	}
 
 	/* register SA types that we can negotiate */
 	can_do_IPcomp = FALSE; /* until we get a response from KLIPS */
@@ -3730,9 +3622,11 @@ void expire_bare_shunts(void)
 
 		if (age > deltasecs(pluto_shunt_lifetime)) {
 			DBG_bare_shunt("expiring old", bsp);
-			delete_bare_shunt(&bsp->ours.addr, &bsp->his.addr,
+			if (!delete_bare_shunt(&bsp->ours.addr, &bsp->his.addr,
 				bsp->transport_proto, ntohl(bsp->said.spi),
-				"expire_bare_shunt");
+				"expire_bare_shunt")) {
+					loglog(RC_LOG_SERIOUS, "failed to delete bare shunt");
+			}
 			passert(bsp != *bspp);
 		} else {
 			DBG_bare_shunt("keeping recent", bsp);
@@ -3741,107 +3635,4 @@ void expire_bare_shunts(void)
 	}
 
 	event_schedule(EVENT_SHUNT_SCAN, bare_shunt_interval, NULL);
-}
-
-unsigned
-ikev1_auth_kernel_attrs(enum ikev1_auth_attribute auth, int *alg)
-{
-	/*
-	 * New way.
-	 *
-	 * In truth the lookup should not be needed.  Instead they should
-	 * just hang onto the kernel_integ object.
-	 */
-	const struct kernel_integ *ki =
-		kernel_integ_by_ikev1_auth_attribute(auth);
-	if (ki != NULL) {
-		if (alg != NULL) {
-			*alg = ki->sadb_aalg;
-		}
-		return ki->integ->integ_keymat_size; /* bytes */
-	}
-        /*
-         * Old way.  Callers should just hang onto the kernel_integ
-         * object.
-         */
-	int authalg;
-	unsigned key_len;
-
-	switch (auth) {
-
-	case AUTH_ALGORITHM_NONE:
-		authalg = 0;
-		key_len = 0;
-		break;
-
-	case AUTH_ALGORITHM_HMAC_MD5:
-		authalg = SADB_AALG_MD5HMAC;
-		key_len = HMAC_MD5_KEY_LEN;
-		break;
-
-	case AUTH_ALGORITHM_HMAC_SHA1:
-		authalg = SADB_AALG_SHA1HMAC;
-		key_len = HMAC_SHA1_KEY_LEN;
-		break;
-
-		/* RFC 4868 */
-	case AUTH_ALGORITHM_HMAC_SHA2_256:
-		authalg = SADB_X_AALG_SHA2_256HMAC;
-		key_len = BYTES_FOR_BITS(256);
-		break;
-
-		/* RFC 4868 */
-	case AUTH_ALGORITHM_HMAC_SHA2_384:
-		authalg = SADB_X_AALG_SHA2_384HMAC;
-		key_len = BYTES_FOR_BITS(384);
-		break;
-
-		/* RFC 4868 */
-	case AUTH_ALGORITHM_HMAC_SHA2_512:
-		authalg = SADB_X_AALG_SHA2_512HMAC;
-		key_len = BYTES_FOR_BITS(512);
-		break;
-
-		/* RFC 2857 Section 3 */
-	case AUTH_ALGORITHM_HMAC_RIPEMD:
-		authalg = SADB_X_AALG_RIPEMD160HMAC;
-		key_len = BYTES_FOR_BITS(160);
-		break;
-
-		/* RFC 3566 Section 4.1 */
-	case AUTH_ALGORITHM_AES_XCBC:
-		authalg = SADB_X_AALG_AES_XCBC_MAC;
-		key_len = BYTES_FOR_BITS(128);
-		break;
-
-		/* RFC 4543 Section 5.3 */
-	case AUTH_ALGORITHM_AES_128_GMAC:
-		authalg = SADB_X_AALG_AH_AES_128_GMAC;
-		key_len = BYTES_FOR_BITS(128);
-		break;
-
-		/* RFC 4543 Section 5.3 */
-	case AUTH_ALGORITHM_AES_192_GMAC:
-		authalg = SADB_X_AALG_AH_AES_192_GMAC;
-		key_len = BYTES_FOR_BITS(192);
-		break;
-
-		/* RFC 4543 Section 5.3 */
-	case AUTH_ALGORITHM_AES_256_GMAC:
-		authalg = SADB_X_AALG_AH_AES_256_GMAC;
-		key_len = BYTES_FOR_BITS(256);
-		break;
-
-	case AUTH_ALGORITHM_NULL_KAME: /* Should we support this? */
-	case AUTH_ALGORITHM_SIG_RSA: /* RFC 4359 */
-	case AUTH_ALGORITHM_KPDK:
-	case AUTH_ALGORITHM_DES_MAC:
-	default:
-		key_len = 0;
-		authalg = -1;
-	}
-
-	if (alg != NULL)
-		*alg = authalg;
-	return key_len;
 }

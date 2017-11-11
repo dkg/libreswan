@@ -13,23 +13,20 @@
  * for more details.
  */
 
-#include <pthread.h>
-
 #include "constants.h"
 
 struct id;
 struct state;
+struct xauth;
 
 /*
- * So code can determine if it isn't running on the main thread; or
- * that its thread is valid.
+ * XXX: Should XAUTH handle timeouts internall?
  */
-extern pthread_t main_thread;
-
-void xauth_cancel(so_serial_t serialno, pthread_t *thread);
+void xauth_abort(so_serial_t serialno, struct xauth **xauth,
+		 struct state *st_callback);
 
 #ifdef XAUTH_HAVE_PAM
-void xauth_start_pam_thread(pthread_t *thread,
+void xauth_start_pam_thread(struct xauth **xauth,
 			    const char *name,
 			    const char *password,
 			    const char *connection_name,
@@ -39,17 +36,14 @@ void xauth_start_pam_thread(pthread_t *thread,
 			    const char *atype,
 			    void (*callback)(struct state *st,
 					     const char *name,
+					     bool aborted,
 					     bool success));
 #endif
 
-/*
- * Force a pre-determined authentication outcome through the XAUTH
- * thread code.
- */
-
-void xauth_start_always_thread(pthread_t *thread,
-			       const char *method, const char *name,
-			       so_serial_t serialno, bool success,
-			       void (*callback)(struct state *st,
-						const char *name,
-						bool success));
+void xauth_next(struct xauth **xauth,
+		const char *method, const char *name,
+		so_serial_t serialno, bool success,
+		void (*callback)(struct state *st,
+				 const char *name,
+				 bool aborted,
+				 bool success));

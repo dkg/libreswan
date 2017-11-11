@@ -52,8 +52,8 @@
 # either as a parameter to make, or added to Makefile.inc.local.
 #
 
-# run the stand alone programs under testing/
-kvmplutotest	basic-pluto-00				good
+# various self-check programs
+kvmplutotest	enumcheck-01			good
 
 # basic pluto test - bring up your basic CONN between eastnet-westnet.
 kvmplutotest	basic-pluto-01			good
@@ -61,7 +61,7 @@ kvmplutotest	basic-pluto-02			good
 kvmplutotest	basic-pluto-03			good
 kvmplutotest    basic-pluto-07-sourceip		wip
 
-kvmplutotest	netkey-audit-01	good
+kvmplutotest	linux-audit-01	good
 
 kvmplutotest	ikev1-01-fuzzer	good
 kvmplutotest	ikev1-02-fuzzer	good
@@ -78,6 +78,14 @@ kvmplutotest	basic-pluto-01-vanishingkey		wip
 kvmplutotest	addconn-01	wip # dumps core
 kvmplutotest	alias-01	wip
 kvmplutotest	readwriteconf-01 wip
+kvmplutotest	algparse-01				good
+kvmplutotest	algparse-02-fips			good
+kvmplutotest	addconn-03	wip
+
+#################################################################
+# Whack UI tests
+#################################################################
+kvmplutotest	whack-02-globalstatus			good
 
 
 #################################################################
@@ -88,6 +96,10 @@ kvmplutotest	ikev2-02-responder-send-notify		good
 kvmplutotest	ikev2-03-basic-rawrsa			good
 kvmplutotest	ikev2-04-basic-x509			good
 kvmplutotest	ikev2-04-basic-x509-ckaid		good
+kvmplutotest	ikev2-04-basic-x509-no-ca		good
+kvmplutotest	ikev2-04-basic-x509-no-ca-02		good
+kvmplutotest	ikev2-04-basic-x509-no-ca-mismatch	good
+kvmplutotest	ikev2-04-basic-x509-no-ca-mismatch-02	good
 kvmplutotest	ikev2-05-basic-psk			good
 kvmplutotest	ikev2-dcookie-01			good
 kvmplutotest	ikev2-dcookie-02			good
@@ -139,6 +151,10 @@ kvmplutotest	ikev2-59-multiple-acquires-alias	wip
 kvmplutotest	ikev2-59-alias-ondemand			wip
 kvmplutotest	ikev2-59-alias-retransmit		wip
 kvmplutotest	ikev2-59-multiple-acquires 		wip
+kvmplutotest	ikev2-60-pam				good
+kvmplutotest	ikev2-61-any-psk			good
+kvmplutotest	ikev2-62-host-ondemand			good
+kvmplutotest	ikev2-62-host-ondemand-instance		good
 
 kvmplutotest	ikev2-24-cryptoload			wip
 kvmplutotest	ikev2-25-rw-nat				good
@@ -172,6 +188,8 @@ kvmplutotest	ikev2-algo-10-aes-gcm128		good
 kvmplutotest	ikev2-algo-11-gcm-prop2			good
 kvmplutotest	ikev2-algo-12-aes-aes_cmac		good
 kvmplutotest	ikev2-algo-13-null			good
+kvmplutotest	ikev2-algo-14-esp-null-aes-gmac		good
+kvmplutotest	ikev2-algo-15-esp-null-none		good
 kvmplutotest	netkey-algo-aes_gcm-01			good
 kvmplutotest	netkey-algo-aes_gcm-02			good
 kvmplutotest	netkey-algo-aes_gcm-03			good
@@ -269,10 +287,7 @@ kvmplutotest	ikev2-x509-11-san-dns-match		good
 kvmplutotest	ikev2-x509-12-san-dn-fromcert		good
 kvmplutotest	ikev2-x509-13-san-dn-match		good
 kvmplutotest	ikev2-x509-14-san-dn-mismatch		good
-kvmplutotest	ikev2-x509-14-san-dn-mismatch-responder	good
-
-kvmplutotest	interop-ikev1-x509-aggr-12-san-dn-match	good
-kvmplutotest	interop-ikev1-x509-aggr-13-san-dn-match-responder good
+kvmplutotest	ikev2-x509-15-san-dn-mismatch-responder	good
 
 kvmplutotest	ikev2-no-nhelpers-01			good
 
@@ -286,8 +301,6 @@ kvmplutotest	ikev1-switchnat-01			wip
 kvmplutotest	ikev1-hub-spoke 			good
 
 kvmplutotest	pluto-ipcmp-01	good
-
-kvmplutotest	ikev1-connswitch-ports-01	wip
 
 kvmplutotest	ikev2-38-psk-65bytes			good
 kvmplutotest	ikev2-39-psk-64bytes 			good
@@ -386,6 +399,8 @@ kvmplutotest	certoe-05-poc-reverse			good
 kvmplutotest	certoe-06-nat-packet-cop		good
 kvmplutotest	certoe-07-nat-2-clients			good
 kvmplutotest	certoe-08-nat-packet-cop-restart	good
+kvmplutotest	certoe-09-packet-host			good
+kvmplutotest	certoe-09-packet-host-2			good
 kvmplutotest	certoe-10-symetric-cert-whack		good
 kvmplutotest	certoe-11-symetric-cert-nat		good
 kvmplutotest	rawrsaoe-asymetric-nat			good
@@ -419,68 +434,6 @@ kvmplutotest	ikev2-asymmetric-11-rsaraw-rsacert	wip
 kvmplutotest	ikev2-asymmetric-14-rsacert-rsaraw	wip
 
 
-# test food groups
-# these set up a food group, then run a ping from sunrise-sunset
-
-# clear peer
-umlplutotest	food-groups-clear-01	good # OE TEMP DISABLED
-# oe peer
-#
-# this test is disabled because the OE peer (west) is not
-# properly configured yet.
-umlplutotest	food-groups-clear-02	skiptest # bad
-
-# clear peer
-umlplutotest	food-groups-clear-or-oe-01	good # OE TEMP DISABLED
-
-# oe peer
-#
-# this test is disabled because the OE peer (west) is not
-# properly configured yet.
-umlplutotest	food-groups-clear-or-oe-02	skiptest # bad
-
-# clear peer
-umlplutotest	food-groups-never-01	good # OE TEMP DISABLED
-
-# oe peer
-# This test is disabled, since no packets should ever arrive at west, so
-# it could never reply. A test of replies needs to be done instead.
-#
-umlplutotest	food-groups-never-02	skiptest # bad
-
-# oe peer
-umlplutotest	food-groups-oe-or-clear-01	good # OE TEMP DISABLED
-
-# clear peer
-#
-# this test is disabled because the OE peer (west) is not
-# properly configured yet.
-umlplutotest	food-groups-oe-or-clear-02	skiptest # bad
-
-# oe peer
-umlplutotest	food-groups-oe-or-die-01	good # OE TEMP DISABLED
-
-# clear peer
-#
-# this test is disabled because the OE peer (west) is not
-# properly configured yet.
-umlplutotest	food-groups-oe-or-die-02	skiptest # bad
-
-# Foodgroups bug: used to forget name of target when target is
-# preserved across --listen.
-umlplutotest	food-groups-bug-01	good # OE TEMP DISABLED
-
-# bug: OE should not be attempted if our private key is missing
-umlplutotest	oe-fail-without-private-key-01	good # OE TEMP DISABLED
-
-# bug: pluto and _pluto_adns can deadlock in a flood
-umlplutotest	oe-flood-deadlock-01	good # OE TEMP DISABLED
-
-# Foodgroups orderly transition: policy groups must be transitioned properly
-# when changed
-umlplutotest	food-groups-orderly-transition-01	skiptest # good
-#
-
 # RFC 3706 DPD and IKEv2 liveness tests
 kvmplutotest	dpd-01	good
 kvmplutotest	dpd-02	good
@@ -498,12 +451,14 @@ kvmplutotest	ikev2-liveness-06	good
 kvmplutotest	ikev2-liveness-07	good
 kvmplutotest	ikev2-liveness-08	wip
 kvmplutotest	ikev2-liveness-09	good
+kvmplutotest	ikev2-liveness-10	wip
 kvmplutotest	ikev2-child-ipsec	good
 kvmplutotest	ikev2-child-ipsec-pfs	good
 kvmplutotest	ikev2-child-ipsec-pfs-nhelpers-0 good
 kvmplutotest	ikev2-child-ipseac-replace-ike	good
 kvmplutotest	ikev2-child-ipsec-responder	good
 kvmplutotest	ikev2-56-restart		skiptest
+kvmplutotest	ikev2-child-restart-mismatch 	wip
 
 kvmplutotest	delete-sa-01			good
 kvmplutotest	delete-sa-03			good
@@ -514,76 +469,13 @@ kvmplutotest	delete-sa-08-rhbz1311360	good
 kvmplutotest	delete-sa-09-rhbz1311360-c32	good
 kvmplutotest	ikev1-27-uniqueid		good
 
-kvmplutotest	ikev1-rekey-connswitch	good
-kvmplutotest	ikev2-rekey-connswitch	good
-
-# oe-fail-without-resp-client-txt-01 - when responding using an OE
-# connection, checks that there is a TXT (and possibly KEY) record
-# that delegates this security gateway to act for the client on our
-# side.
-umlplutotest	oe-fail-without-resp-client-txt-01	good # OE TEMP DISABLED
-
-#
-# co-terminal-02 - wavesec+OE, with wavesec started first
-#
-umlXhost	co-terminal-02		good # OE TEMP DISABLED
-
-#
-# co-terminal-03 - wavesec+OE, with OE started first
-#
-umlXhost	co-terminal-03		good # OE TEMP DISABLED
-
-#
-# tests of OE from road warriors (no gateways)
-# full OE test
-#
-umlXhost	oe-road-01		good # OE TEMP DISABLED
-
-#
-# FQDN OE test with TXT RR, no KEY
-#
-umlXhost	oe-road-02		good # OE TEMP DISABLED
-
-#
-# FQDN OE test with TXT, mangled
-#
-umlXhost	oe-road-03		good # OE TEMP DISABLED
-
-#
-# FQDN OE test with KEY, no TXT
-#
-umlXhost	oe-road-04		good # OE TEMP DISABLED
-
-#
-# tests of OE from road warriors (no gateways)
-# full OE test
-#
-umlXhost	myid-road-01		good # OE TEMP DISABLED
-
-#
-# FQDN OE test with TXT RR, no KEY
-#
-umlXhost	myid-road-02		good # OE TEMP DISABLED
-
-#
-# FQDN OE test with TXT, mangled
-#
-umlXhost	myid-road-03		good # OE TEMP DISABLED
-
-#
-# FQDN OE test with KEY, no TXT
-#
-umlXhost	myid-road-04		good # OE TEMP DISABLED
-
-#
-# FQDN OE with trailing dot
-#
-umlXhost	myid-road-05		good # OE TEMP DISABLED
-
-#
-# a test of rekeying an OE connection
-#
-umlXhost	pluto-rekey-01		good # OE TEMP DISABLED
+# connection switching tests
+kvmplutotest	ikev1-connswitch-01		good
+kvmplutotest	ikev1-connswitch-ports-01	wip
+kvmplutotest	ikev1-ikev2-connswitch-01	good
+kvmplutotest	ikev1-rekey-connswitch		good
+kvmplutotest	ikev2-connswitch-01		good
+kvmplutotest	ikev2-connswitch-02		good
 
 #
 # a test of using X.509 keys
@@ -591,13 +483,14 @@ umlXhost	pluto-rekey-01		good # OE TEMP DISABLED
 kvmplutotest	x509-pluto-01		good
 kvmplutotest	x509-pluto-02		good
 kvmplutotest	x509-pluto-03		good
-kvmplutotest	x509-pluto-04		wip
+kvmplutotest	x509-pluto-04		good
 
 kvmplutotest	x509-pluto-frag-00	good
 kvmplutotest	x509-pluto-frag-01	good
 kvmplutotest	x509-pluto-frag-02	good
 kvmplutotest	x509-pluto-frag-03	good
 kvmplutotest	x509-pluto-frag-04	good
+kvmplutotest	x509-ikev2-frag-01-ike-aes_gcm	good
 
 kvmplutotest	nat-pluto-01		good
 kvmplutotest	nat-pluto-02		good
@@ -610,6 +503,7 @@ kvmplutotest	nat-pluto-07		good
 kvmplutotest	nat-pluto-08		good
 kvmplutotest	nat-pluto-09		good
 kvmplutotest	nat-pluto-10		wip
+kvmplutotest	nat-pluto-11		good
 
 #
 # Test of NAT traversal w/DPD
@@ -650,6 +544,16 @@ kvmplutotest	xauth-pluto-17		good
 kvmplutotest	xauth-pluto-18		good
 kvmplutotest	xauth-pluto-19		good
 kvmplutotest	xauth-pluto-20-pam	good
+kvmplutotest	xauth-pluto-20-pam-timeout good
+kvmplutotest	xauth-pluto-21-main-xr0-drop 	wip
+kvmplutotest	xauth-pluto-21-aggr-xr0-drop 	wip
+kvmplutotest	xauth-pluto-22		good
+kvmplutotest	xauth-pluto-23		good
+kvmplutotest	xauth-pluto-24-static-addresspool good
+kvmplutotest	xauth-pluto-25-mixed-addresspool good
+kvmplutotest	xauth-pluto-25-lsw299	good
+kvmplutotest	xauth-pluto-26		good
+kvmplutotest	xauth-pluto-27		good
 
 
 # esp=null-*
@@ -761,7 +665,8 @@ kvmplutotest	interop-ikev1-strongswan-15-twofish		good
 kvmplutotest	interop-ikev1-strongswan-16-serpent		good
 kvmplutotest	interop-ikev2-strongswan-31-asymmetric-responder	good
 kvmplutotest	interop-ikev2-strongswan-32-ip-lease		wip
-
+kvmplutotest	interop-ikev1-strongswan-x509-aggr-12-san-dn-match	good
+kvmplutotest	interop-ikev1-strongswan-x509-aggr-13-san-dn-match-responder good
 
 kvmplutotest    netkey-klips-pluto-03		good
 kvmplutotest    klips-netkey-pluto-06		good
@@ -810,6 +715,7 @@ kvmplutotest	interop-ikev1-strongswan-08-strongswan-cast	good
 kvmplutotest    interop-ikev2-strongswan-02-psk-responder	good
 kvmplutotest    interop-ikev2-strongswan-03-psk-initiator	good
 kvmplutotest    interop-ikev2-strongswan-04-x509-responder	good
+kvmplutotest    interop-ikev2-strongswan-04-responder-impair	good
 kvmplutotest	interop-ikev2-strongswan-05-psk-aes		good
 kvmplutotest	interop-ikev2-strongswan-05-psk-md5		good
 kvmplutotest	interop-ikev2-strongswan-06-aes192		good
@@ -840,6 +746,11 @@ kvmplutotest	interop-ikev2-strongswan-35-ipsec-rekey		good
 kvmplutotest	interop-ikev2-strongswan-35-rekey-pfs		good
 kvmplutotest	interop-ikev2-strongswan-35-rekey-reauth	good
 kvmplutotest	interop-ikev2-strongswan-35-responder-rekey-pfs good
+kvmplutotest	interop-ikev2-strongswan-36-esp-gmac-responder	good
+kvmplutotest	interop-ikev2-strongswan-37-initiator-digsig	good
+kvmplutotest	interop-ikev2-strongswan-38-digsig-impair	good
+kvmplutotest	interop-ikev2-strongswan-39-fragmentation-aes-gcm	good
+kvmplutotest	interop-ikev2-pluto-01-integ-null		good
 
 #################################################################
 # DNSSEC tests
@@ -862,8 +773,6 @@ kvmplutotest	replay-authip-01			good
 
 kvmplutotest	l2tp-01					good
 kvmplutotest	l2tp-02					good
-kvmplutotest	l2tp-02-netkey				good
-kvmplutotest	l2tp-05-netkey				wip
 
 kvmplutotest	ikeport-01				wip
 kvmplutotest	listen-change-01			good

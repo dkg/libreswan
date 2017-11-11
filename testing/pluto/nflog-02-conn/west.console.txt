@@ -55,7 +55,7 @@ west #
 002 "westnet-eastnet-ikev2" #2: IKEv2 mode peer ID is ID_FQDN: '@east'
 [ 00.00] Netfilter messages via NETLINK v0.30.
 002 "westnet-eastnet-ikev2" #2: negotiated connection [192.0.1.0-192.0.1.255:0-65535 0] -> [192.0.2.0-192.0.2.255:0-65535 0]
-004 "westnet-eastnet-ikev2" #2: STATE_V2_IPSEC_I: IPsec SA established tunnel mode {ESP=>0xESPESP <0xESPESP xfrm=AES_GCM_C_256-NONE NATOA=none NATD=none DPD=passive}
+004 "westnet-eastnet-ikev2" #2: STATE_V2_IPSEC_I: IPsec SA established tunnel mode {ESP=>0xESPESP <0xESPESP xfrm=AES_GCM_16_256-NONE NATOA=none NATD=none DPD=passive}
 west #
  iptables -L -n
 Chain INPUT (policy ACCEPT)
@@ -145,6 +145,18 @@ src 192.0.1.0/24 dst 192.0.2.0/24
 	dir out priority 2344 ptype main 
 	tmpl src 0.0.0.0 dst 0.0.0.0
 		proto esp reqid REQID mode transport
+src ::/0 dst ::/0 proto ipv6-icmp type 135 
+	dir fwd priority 1 ptype main 
+src ::/0 dst ::/0 proto ipv6-icmp type 135 
+	dir in priority 1 ptype main 
+src ::/0 dst ::/0 proto ipv6-icmp type 135 
+	dir out priority 1 ptype main 
+src ::/0 dst ::/0 proto ipv6-icmp type 136 
+	dir fwd priority 1 ptype main 
+src ::/0 dst ::/0 proto ipv6-icmp type 136 
+	dir in priority 1 ptype main 
+src ::/0 dst ::/0 proto ipv6-icmp type 136 
+	dir out priority 1 ptype main 
 XFRM done
 IPSEC mangle TABLES
 NEW_IPSEC_CONN mangle TABLES

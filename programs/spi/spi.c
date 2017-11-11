@@ -241,7 +241,7 @@ static bool parse_life_options(u_int32_t life[life_maxsever][life_maxtype],
 				optargp,
 				(int)strlen(optargp));
 		}
-		if (strlen(optargp) == 0) {
+		if (optargp[0] == '\0') {
 			fprintf(stderr,
 				"%s: expected value after '=' in --life option. optargt=0p%p, optargt+strlen(optargt)=0p%p, optargp=0p%p\n",
 				progname,
@@ -354,16 +354,72 @@ static bool pfkey_build(int error,
 	}
 }
 
+/*
+ * Load kernel_alg arrays from /proc
+ * Only used in manual mode from programs/spi/spi.c
+ */
+static bool kernel_alg_proc_read(void)
+{
+	int satype;
+	int supp_exttype;
+	int alg_id, ivlen, minbits, maxbits;
+	char name[20];
+	struct sadb_alg sadb_alg;
+	char buf[128];
+	FILE *fp = fopen("/proc/net/pf_key_supported", "r");
+
+	if (fp == NULL)
+		return FALSE;
+
+	kernel_alg_init();
+	while (fgets(buf, sizeof(buf), fp)) {
+		if (buf[0] != ' ')	/* skip titles */
+			continue;
+		sscanf(buf, "%d %d %d %d %d %d %s",
+			&satype, &supp_exttype,
+			&alg_id, &ivlen,
+			&minbits, &maxbits, name);
+		switch (satype) {
+		case SADB_SATYPE_ESP:
+			switch (supp_exttype) {
+			case SADB_EXT_SUPPORTED_AUTH:
+			case SADB_EXT_SUPPORTED_ENCRYPT:
+				sadb_alg.sadb_alg_id = alg_id;
+				sadb_alg.sadb_alg_ivlen = ivlen;
+				sadb_alg.sadb_alg_minbits = minbits;
+				sadb_alg.sadb_alg_maxbits = maxbits;
+				sadb_alg.sadb_alg_reserved = 0;
+				kernel_alg_add(satype, supp_exttype,
+					       &sadb_alg);
+				break;
+			}
+			break;
+		default:
+			break;
+		}
+	}
+	fclose(fp);
+	return TRUE;
+}
+
+/*
+ * This policy disables both IKEv1 and IKEv2 checks so all algorithms
+ * are valid.
+ */
+
+const struct parser_policy policy = {
+	.ikev1 = false,
+	.ikev2 = false,
+	.alg_is_ok = kernel_alg_is_ok,
+};
+
 static int decode_esp(char *algname)
 {
 	char err_buf[256] = "";	/* ??? big enough? */
 	int esp_alg;
 
-	/*
-	 * POLICY=0 disables checks that the algorithm will work with
-	 * IKEv1 and/or IKEv2.
-	 */
-	struct alg_info_esp *alg_info = alg_info_esp_create_from_str(0, algname, err_buf, sizeof(err_buf));
+	struct alg_info_esp *alg_info = alg_info_esp_create_from_str(&policy, algname,
+								     err_buf, sizeof(err_buf));
 
 	if (alg_info != NULL) {
 		int esp_ealg_id, esp_aalg_id;
@@ -384,29 +440,26 @@ static int decode_esp(char *algname)
 				"%s: alg_info: cnt=%d ealg[0]=%d aalg[0]=%d\n",
 				progname,
 				alg_info->ai.alg_info_cnt,
-				esp_info->ikev1esp_transid,
-				esp_info->ikev1esp_auth);
+				esp_info->encrypt->common.id[IKEv1_ESP_ID],
+				esp_info->integ->common.id[IKEv1_ESP_ID]);
 		}
-		esp_ealg_id = esp_info->ikev1esp_transid;
-		esp_aalg_id = esp_info->ikev1esp_auth;
+		esp_ealg_id = esp_info->encrypt->common.id[IKEv1_ESP_ID];
+		esp_aalg_id = esp_info->integ->common.id[IKEv1_ESP_ID];
 		if (kernel_alg_proc_read()) {
-			err_t ugh;
 
 			proc_read_ok++;
 
-			ugh = check_kernel_encrypt_alg(esp_ealg_id, 0);
-			if (ugh != NULL) {
+			if (!kernel_alg_encrypt_ok(esp_info->encrypt)) {
 				fprintf(stderr, "%s: ESP encryptalg=%d (\"%s\") "
-					"not present - %s\n",
+					"not present\n",
 					progname,
 					esp_ealg_id,
 					enum_name(&esp_transformid_names,
-						  esp_ealg_id),
-					ugh);
+						  esp_ealg_id));
 				exit(1);
 			}
 
-			if (!kernel_alg_esp_auth_ok(esp_aalg_id, 0)) {
+			if (!kernel_alg_integ_ok(esp_info->integ)) {
 				/* ??? this message looks badly worded */
 				fprintf(stderr, "%s: ESP authalg=%d (\"%s\") - alg not present\n",
 					progname, esp_aalg_id,
@@ -488,6 +541,8 @@ static void emit_lifetime(const char *extname, uint16_t exttype, struct sadb_ext
 int main(int argc, char *argv[])
 {
 	tool_init_log(argv[0]);
+	/* force pfkey logging */
+	pfkey_error_func = pfkey_debug_func = printf;
 
 	__u32 spi = 0;
 	int c;
@@ -615,7 +670,6 @@ int main(int argc, char *argv[])
 			snprintf(progname, room, combine_fmt,
 				 argv[0],
 				 optarg);
-			tool_close_log();
 			tool_init_log(progname);
 
 			argcount -= 2;
@@ -1121,7 +1175,7 @@ int main(int argc, char *argv[])
 			 */
 			alg_p = kernel_alg_sadb_alg_get(SADB_SATYPE_ESP,
 							SADB_EXT_SUPPORTED_ENCRYPT,
-							esp_info->ikev1esp_transid);
+							esp_info->encrypt->common.id[IKEv1_ESP_ID]);
 			assert(alg_p != NULL);
 			keylen = enckeylen * 8;
 
@@ -1155,7 +1209,7 @@ int main(int argc, char *argv[])
 			}
 			alg_p = kernel_alg_sadb_alg_get(SADB_SATYPE_ESP,
 							SADB_EXT_SUPPORTED_AUTH,
-							alg_info_esp_aa2sadb(esp_info->ikev1esp_auth));
+							esp_info->integ->integ_ikev1_ah_transform);
 			assert(alg_p);
 			keylen = authkeylen * 8;
 			minbits = alg_p->sadb_alg_minbits;
@@ -1277,7 +1331,7 @@ int main(int argc, char *argv[])
 
 	switch (alg) {
 	case XF_OTHER_ALG:
-		authalg = alg_info_esp_aa2sadb(esp_info->ikev1esp_auth);
+		authalg = esp_info->integ->integ_ikev1_ah_transform;
 		if (debug) {
 			fprintf(stdout, "%s: debug: authalg=%d\n",
 				progname, authalg);
@@ -1294,7 +1348,7 @@ int main(int argc, char *argv[])
 		encryptalg = SADB_X_CALG_LZS;
 		break;
 	case XF_OTHER_ALG:
-		encryptalg = esp_info->ikev1esp_transid;
+		encryptalg = esp_info->encrypt->common.id[IKEv1_ESP_ID];
 		if (debug) {
 			fprintf(stdout, "%s: debug: encryptalg=%d\n",
 				progname, encryptalg);
@@ -1757,8 +1811,7 @@ int main(int argc, char *argv[])
 							K_SADB_EXT_LIFETIME_CURRENT];
 
 					if (s != NULL) {
-						printf("%s: lifetime_current=%u(allocations)/%" PRIu64 "(bytes)/%"
-							PRIu64 "(addtime)/%" PRIu64 "(usetime)"
+						printf("%s: lifetime_current=%u(allocations)/%" PRIu64 "(bytes)/%" PRIu64 "(addtime)/%" PRIu64 "(usetime)"
 #ifdef NOT_YET
 						       "/%d(packets)"
 #endif /* NOT_YET */

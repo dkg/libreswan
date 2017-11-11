@@ -35,6 +35,18 @@ src 192.0.2.0/24 dst 192.0.1.0/24
 	dir out priority 2344 ptype main 
 	tmpl src 192.1.2.23 dst 192.1.2.45
 		proto esp reqid REQID mode tunnel
+src ::/0 dst ::/0 proto ipv6-icmp type 135 
+	dir fwd priority 1 ptype main 
+src ::/0 dst ::/0 proto ipv6-icmp type 135 
+	dir in priority 1 ptype main 
+src ::/0 dst ::/0 proto ipv6-icmp type 135 
+	dir out priority 1 ptype main 
+src ::/0 dst ::/0 proto ipv6-icmp type 136 
+	dir fwd priority 1 ptype main 
+src ::/0 dst ::/0 proto ipv6-icmp type 136 
+	dir in priority 1 ptype main 
+src ::/0 dst ::/0 proto ipv6-icmp type 136 
+	dir out priority 1 ptype main 
 XFRM done
 IPSEC mangle TABLES
 NEW_IPSEC_CONN mangle TABLES
@@ -50,9 +62,9 @@ Certificate Nickname                                         Trust Attributes
 east #
  grep retransmit /tmp/pluto.log
 | duplicate IKE_INIT_I message received, retransmiting previous packet
-| sending 440 bytes for ikev2-responder-retransmit IKE_INIT_I through eth1:500 to 192.1.2.45:500 (using #1)
-| retransmit response for message ID: 1 exchnage ISAKMP_v2_AUTH
-| sending 233 bytes for ikev2-responder-retransmit through eth1:500 to 192.1.2.45:500 (using #1)
+| sending 432 bytes for ikev2-responder-retransmit IKE_INIT_I through eth1:500 to 192.1.2.45:500 (using #1)
+| retransmit response for message ID: 1 exchange ISAKMP_v2_AUTH
+| sending 225 bytes for ikev2-responder-retransmit through eth1:500 to 192.1.2.45:500 (using #1)
 east #
 east #
  ../bin/check-for-core.sh

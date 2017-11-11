@@ -60,7 +60,7 @@ KVSHORTUTIL=${MAKEUTILS}/kernelversion-short
 
 SUBDIRS?=lib programs initsystems testing
 
-TAGSFILES=$(wildcard include/*.h lib/lib*/*.c programs/*/*.c linux/include/*.h linux/include/libreswan/*.h linux/net/ipsec/*.[ch])
+TAGSFILES=$(wildcard include/*.h lib/lib*/*.[ch] programs/*/*.[ch] linux/include/*.h linux/include/libreswan/*.h linux/net/ipsec/*.[ch])
 
 tags:	$(TAGSFILES)
 	@LC_ALL=C ctags $(CTAGSFLAGS) ${TAGSFILES}
@@ -593,7 +593,7 @@ showversion:
 showdebversion:
 	@echo ${IPSECVERSION} |  sed "s/^v//" | sed -e "s/\([0-9]\{1,3\}\)\.\([0-9]\{1,3\}\)\(.*\)/\1.\2~\3/" | sed "s/~-/~/"
 showrpmversion:
-	@echo ${IPSECVERSION} | sed "s/^v//" | sed "s/-.*//"
+	@echo ${IPSECVERSION} |  sed "s/^v//" | sed -e "s/\([0-9]\{1,3\}\)\.\([0-9]\{1,3\}\)\(.*\)/\1.\2_\3/" | sed "s/-/_/g"
 showrpmrelease:
 	@echo ${IPSECVERSION} | sed "s/^v//" | sed "s/^[^-]*-\(.*\)/\1/"
 showobjdir:
@@ -602,7 +602,8 @@ showobjdir:
 # these need to move elsewhere and get fixed not to use root
 
 deb:
-	sed -i "s/@IPSECBASEVERSION@/`make -s showdebversion`/g" debian/{changelog,NEWS}
+	cp -r packaging/debian .
+	sed -i "s/@IPSECBASEVERSION@/`make -s showdebversion`/g" debian/changelog
 	debuild -i -us -uc -b
 	#debuild -S -sa
 	@echo "to build optional KLIPS kernel module, run make deb-klips"
@@ -617,10 +618,7 @@ deb-klips:
 release:
 	packaging/utils/makerelease
 
-# Force install-programs to be run after everything else.
-install: install-programs
-install-programs: local-install recursive-install
-install-programs:
+local-install:
 	@if test -z "$(DESTDIR)" -a -x /usr/sbin/selinuxenabled -a $(PUBDIR) != "$(DESTDIR)/usr/sbin" ; then \
 	if /usr/sbin/selinuxenabled ; then  \
 		echo -e "\n************************** WARNING ***********************************" ; \

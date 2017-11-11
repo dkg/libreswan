@@ -119,7 +119,8 @@ static const char *const timer_event_name[] = {
 	"EVENT_NAT_T_KEEPALIVE",
 	"EVENT_DPD",
 	"EVENT_DPD_TIMEOUT",
-	"EVENT_CRYPTO_FAILED",
+	"EVENT_CRYPTO_TIMEOUT",
+	"EVENT_PAM_TIMEOUT",
 
 	"EVENT_v2_RETRANSMIT",
 	"EVENT_v2_RESPONDER_TIMEOUT",
@@ -177,7 +178,7 @@ static const char *const state_name[] = {
 	"STATE_XAUTH_I0",
 	"STATE_XAUTH_I1",
 
-	"STATE_IKE_ROOF",
+	"STATE_IKEv1_ROOF",
 
 	/* v2 */
 	"STATE_IKEv2_BASE",
@@ -248,8 +249,8 @@ static const char *const state_story[] = {
 
 	"ModeCfg inititator - awaiting CFG_reply",      /* STATE_MODE_CFG_I1 */
 
-	"XAUTH client - awaiting CFG_request",          /* MODE_XAUTH_I0 */
-	"XAUTH client - awaiting CFG_set",              /* MODE_XAUTH_I1 */
+	"XAUTH client - possibly awaiting CFG_request",          /* MODE_XAUTH_I0 */
+	"XAUTH client - possibly awaiting CFG_set",              /* MODE_XAUTH_I1 */
 	"invalid state - IKE roof",
 	"invalid state - IKEv2 base",
 	"sent v2I1, expected v2R1",             /* STATE_PARENT_I1 */

@@ -37,6 +37,7 @@ const struct encrypt_desc ike_alg_encrypt_null =
 		.officname = "null",
 		.algo_type = IKE_ALG_ENCRYPT,
 		.id = {
+			[IKEv1_OAKLEY_ID] = -1,
 			[IKEv1_ESP_ID] = ESP_NULL,
 			[IKEv2_ALG_ID] = IKEv2_ENCR_NULL,
 		},
@@ -52,17 +53,37 @@ const struct encrypt_desc ike_alg_encrypt_null =
 /*
  * This doesn't really exist, yet life is easier if it does.
  */
-const struct integ_desc alg_info_integ_null = {
+const struct integ_desc ike_alg_integ_none = {
        .common = {
-               .name = "null",
-               .fqn = "NULL",
-	       .names = { "null", },
-	       .officname = "null",
+               .name = "none",
+               .fqn = "NONE",
+	       .names = { "none", "null", },
+	       .officname = "none",
 	       .algo_type = IKE_ALG_INTEG,
 	       .id = {
-			/* [IKEv1_OAKLEY_ID] = AUTH_ALGORITHM_NONE or AUTH_ALGORITHM_NULL_KAME? */
-			[IKEv1_ESP_ID] = ESP_KAME_NULL, /* = AH_NULL = AUTH_ALGORITHM_NULL_KAME why? */
+			/*
+			 * Not [IKEv1_OAKLEY_ID] = AUTH_ALGORITHM_NONE
+			 * or AUTH_ALGORITHM_NULL_KAME?
+			 */
+			[IKEv1_OAKLEY_ID] = -1,
+			/*
+			 * Not ESP_KAME_NULL=251?
+			 *
+			 * XXX: enabling this for ESP also enables it
+			 * for AH which isn't valid.  It gets rejected
+			 * down the track.  One fix would be to
+			 * finally add IKEv1_AH_ID.
+			 */
+			[IKEv1_ESP_ID] = ESP_reserved,
 			[IKEv2_ALG_ID] = IKEv2_AUTH_NONE,
 		},
+	       /*
+		* Because aes_gcm-null is valid in FIPS mode, "none"
+		* integrity is an allowed FIPS algorithm.
+		*
+		* Other code gets the job of rejecting "none" when not
+		* AEAD.
+		*/
+	       .fips = true,
        },
 };

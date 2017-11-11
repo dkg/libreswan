@@ -56,6 +56,7 @@
 #include "ikev2.h"
 #include "pending.h" /* for flush_pending_by_connection */
 #include "ikev1_xauth.h"
+#include "xauth.h"
 #include "kernel.h" /* for scan_shunts() */
 #include "kernel_pfkey.h" /* for pfkey_scan_shunts */
 
@@ -135,7 +136,7 @@ static void retransmit_v1_msg(struct state *st)
 
 	set_cur_state(st);
 
-	/* Paul: this line can stay attempt 3 of 2 because the cleanup happens when over the maximum */
+	/* Paul: this line can say attempt 3 of 2 because the cleanup happens when over the maximum */
 	DBG(DBG_CONTROL, {
 		ipstr_buf b;
 		char cib[CONN_INST_BUF];
@@ -399,11 +400,11 @@ static bool parent_vanished(struct state *st)
 			fmt_conn_instance(c, cib1);
 			fmt_conn_instance(pst->st_connection, cib2);
 
-			DBG(DBG_CONTROLMORE, DBG_log("\"%s\"%s #%lu parent connection of this state is diffeent"
-						" \"%s\"%s #%lu",
-						c->name, cib1, st->st_serialno,
-						pst->st_connection->name, cib2,
-						pst->st_serialno));
+			DBG(DBG_CONTROLMORE,
+				DBG_log("\"%s\"%s #%lu parent connection of this state is diffeent \"%s\"%s #%lu",
+					c->name, cib1, st->st_serialno,
+					pst->st_connection->name, cib2,
+					pst->st_serialno));
 		}
 		return FALSE;
 	}
@@ -467,8 +468,8 @@ static void liveness_check(struct state *st)
 		}
 
 		DBG(DBG_DPD,
-			DBG_log("#%lu liveness_check - last_liveness: %ld, tm: %ld "
-				"parent #%lu", st->st_serialno,
+			DBG_log("#%lu liveness_check - last_liveness: %ld, tm: %ld parent #%lu",
+				st->st_serialno,
 				(long)last_liveness.mono_secs,
 				(long)tm.mono_secs, pst->st_serialno));
 
@@ -480,10 +481,8 @@ static void liveness_check(struct state *st)
 
 		if (pst->st_pend_liveness &&
 				deltasecs(monotimediff(tm, last_liveness)) >= timeout) {
-			libreswan_log("#%lu liveness_check - peer %s "
-					"has not responded in %ld seconds, with a timeout of "
-					"%ld, taking %s",
-					st->st_serialno, that_ip.buf,
+			libreswan_log("liveness_check - peer %s has not responded in %ld seconds, with a timeout of %ld, taking %s",
+					log_ip ? that_ip.buf : "<ip address>",
 					(long)deltasecs(monotimediff(tm, last_liveness)),
 					(long)timeout,
 					enum_name(&dpd_action_names,
@@ -499,13 +498,12 @@ static void liveness_check(struct state *st)
 					st->st_serialno, that_ip.buf));
 
 			if (ret != STF_OK) {
-				DBG(DBG_DPD, DBG_log("#%lu failed to send liveness informational from "
-							"%s to %s using parent "
-							" #%lu",
-							st->st_serialno,
-							this_ip.buf,
-							that_ip.buf,
-							pst->st_serialno));
+				DBG(DBG_DPD,
+					DBG_log("#%lu failed to send liveness informational from %s to %s using parent  #%lu",
+						st->st_serialno,
+						this_ip.buf,
+						that_ip.buf,
+						pst->st_serialno));
 				return; /* this prevents any new scheduling ??? */
 			}
 		}
@@ -641,7 +639,8 @@ static void timer_event_cb(evutil_socket_t fd UNUSED, const short event UNUSED, 
 	case EVENT_v2_RESPONDER_TIMEOUT:
 	case EVENT_SA_EXPIRE:
 	case EVENT_SO_DISCARD:
-	case EVENT_CRYPTO_FAILED:
+	case EVENT_CRYPTO_TIMEOUT:
+	case EVENT_PAM_TIMEOUT:
 		passert(st != NULL && st->st_event == ev);
 		st->st_event = NULL;
 		break;
@@ -713,7 +712,7 @@ static void timer_event_cb(evutil_socket_t fd UNUSED, const short event UNUSED, 
 					st->st_serialno,
 					enum_name(&state_names, st->st_state),
 					st->st_whack_sock));
-		release_pending_whacks(st, "realse whack");
+		release_pending_whacks(st, "release whack");
 		break;
 
 	case EVENT_v1_RETRANSMIT:
@@ -751,24 +750,24 @@ static void timer_event_cb(evutil_socket_t fd UNUSED, const short event UNUSED, 
 
 		if (IS_IKE_SA(st)) {
 			newest = c->newest_isakmp_sa;
-			DBG(DBG_LIFECYCLE, DBG_log("%s picked newest_isakmp_sa "
-						"#%lu",
-						enum_name(&timer_event_names,
-							type), newest));
+			DBG(DBG_LIFECYCLE,
+				DBG_log("%s picked newest_isakmp_sa #%lu",
+					enum_name(&timer_event_names, type),
+					newest));
 		} else {
 			newest = c->newest_ipsec_sa;
-			DBG(DBG_LIFECYCLE, DBG_log("%s picked newest_ipsec_sa "
-						"#%lu",
-					       enum_name(&timer_event_names,
-							type), newest));
+			DBG(DBG_LIFECYCLE,
+				DBG_log("%s picked newest_ipsec_sa #%lu",
+					enum_name(&timer_event_names, type),
+					newest));
 		}
 
 		if (newest != SOS_NOBODY && newest > st->st_serialno) {
 			/* not very interesting: no need to replace */
-			DBG(DBG_LIFECYCLE, DBG_log(
-					"not replacing stale %s SA: #%lu will do",
-					IS_IKE_SA(st) ?
-					"ISAKMP" : "IPsec", newest));
+			DBG(DBG_LIFECYCLE,
+				DBG_log("not replacing stale %s SA: #%lu will do",
+					IS_IKE_SA(st) ? "ISAKMP" : "IPsec",
+					newest));
 		} else if (type == EVENT_v2_SA_REPLACE_IF_USED &&
 				get_sa_info(st, TRUE, &last_used_age) &&
 				deltaless(c->sa_rekey_margin, last_used_age)) {
@@ -778,7 +777,7 @@ static void timer_event_cb(evutil_socket_t fd UNUSED, const short event UNUSED, 
 				struct state *cst = state_with_serialno(c->newest_ipsec_sa);
 				if (cst == NULL)
 					break;
-				DBG(DBG_LIFECYCLE, DBG_log( "#%lu check last used on newest IPsec SA #%lu",
+				DBG(DBG_LIFECYCLE, DBG_log("#%lu check last used on newest IPsec SA #%lu",
 							st->st_serialno, cst->st_serialno));
 				if (get_sa_info(cst, TRUE, &last_used_age) &&
 					deltaless(c->sa_rekey_margin, last_used_age))
@@ -895,11 +894,29 @@ static void timer_event_cb(evutil_socket_t fd UNUSED, const short event UNUSED, 
 		dpd_timeout(st);
 		break;
 
-	case EVENT_CRYPTO_FAILED:
+	case EVENT_CRYPTO_TIMEOUT:
 		DBG(DBG_LIFECYCLE,
 			DBG_log("event crypto_failed on state #%lu, aborting",
 				st->st_serialno));
 		delete_state(st);
+		/* note: no md->st to clear */
+		break;
+
+	case EVENT_PAM_TIMEOUT:
+		DBG(DBG_LIFECYCLE,
+				DBG_log("PAM thread timeout on state #%lu",
+					st->st_serialno));
+		/*
+		 * This immediately invokes the callback passing in
+		 * ST.
+		 */
+		xauth_abort(st->st_serialno, &st->st_xauth, st);
+		/*
+		 * Removed this call, presumably it was needed because
+		 * the call back didn't fire until later?
+		 *
+		 * event_schedule(EVENT_SA_EXPIRE, MAXIMUM_RESPONDER_WAIT, st);
+		 */
 		/* note: no md->st to clear */
 		break;
 
@@ -954,13 +971,14 @@ static void event_schedule_tv(enum event_type type, const struct timeval delay, 
 	pexpect(delay.tv_sec < 3600 * 24 * 31);
 
 	ev->ev_type = type;
-	ev->ev_name = enum_name(&timer_event_names, type);
+	ev->ev_name = clone_str(enum_name(&timer_event_names, type), "timeer event name");
 
 	/* ??? ev_time lacks required precision */
 	ev->ev_time = monotimesum(mononow(), deltatime(delay.tv_sec));
 
 	ev->ev_state = st;
-	ev->ev = pluto_event_new(NULL_FD, EV_TIMEOUT, timer_event_cb, ev, &delay);
+	ev->ev = timer_private_pluto_event_new(NULL_FD, EV_TIMEOUT,
+					       timer_event_cb, ev, &delay);
 	link_pluto_event_list(ev); /* add to global ist to track */
 
 	/*

@@ -376,10 +376,9 @@ static bool same_host(const char *a_dnshostname, const ip_address *a_host_addr,
 {
 	/* should this be dnshostname and host_addr ?? */
 
-	return (a_dnshostname != NULL && b_dnshostname != NULL &&
-			streq(a_dnshostname, b_dnshostname)) ||
-		(a_dnshostname == NULL && b_dnshostname == NULL &&
-		 sameaddr(a_host_addr, b_host_addr));
+	return a_dnshostname == NULL ?
+		b_dnshostname == NULL && sameaddr(a_host_addr, b_host_addr) :
+		b_dnshostname != NULL && streq(a_dnshostname, b_dnshostname);
 }
 
 static bool same_in_some_sense(const struct connection *a,
@@ -398,6 +397,7 @@ void restart_connections_by_peer(struct connection *const c)
 
 	struct host_pair *hp = c->host_pair;
 	enum connection_kind c_kind  = c->kind;
+	struct connection *hp_next = hp->connections->hp_next;
 
 	pexpect(hp != NULL);	/* ??? why would this happen? */
 	if (hp == NULL)
@@ -430,11 +430,17 @@ void restart_connections_by_peer(struct connection *const c)
 		host_addr = c->spd.that.host_addr;
 	}
 
-	for (d = hp->connections; d != NULL; d = d->hp_next) {
-		if (same_host(dnshostname, &host_addr,
-				d->dnshostname, &d->spd.that.host_addr))
-			initiate_connection(d->name, NULL_FD, LEMPTY,
-					pcim_demand_crypto, NULL);
+	if (c_kind == CK_INSTANCE && hp_next == NULL) {
+		/* in simple cases this is  a dangling hp */
+		DBG(DBG_CONTROL,
+			DBG_log ("no connection to restart after termination"));
+	} else {
+		for (d = hp->connections; d != NULL; d = d->hp_next) {
+			if (same_host(dnshostname, &host_addr,
+					d->dnshostname, &d->spd.that.host_addr))
+				initiate_connection(d->name, NULL_FD, LEMPTY,
+						pcim_demand_crypto, NULL);
+		}
 	}
 	pfreeany(dnshostname);
 }
@@ -961,7 +967,7 @@ void ISAKMP_SA_established(struct connection *c, so_serial_t serial)
 
 	/* NULL authentication can never replaced - it is all anonnymous */
 	if (LIN(POLICY_AUTH_NULL, c->policy) ||
-	   ( c->spd.that.authby == AUTH_NULL || c->spd.this.authby == AUTH_NULL)) {
+	   (c->spd.that.authby == AUTH_NULL || c->spd.this.authby == AUTH_NULL)) {
 
 		DBG(DBG_CONTROL, DBG_log("NULL Authentication - all clients appear identical"));
 		return;
@@ -1224,6 +1230,7 @@ void connection_check_phase2(void)
 				is.whackfd = NULL_FD;
 				is.moredebug = 0;
 				is.importance = pcim_local_crypto;
+				is.remote_host = NULL;
 
 				initiate_a_connection(c, &is);
 			}

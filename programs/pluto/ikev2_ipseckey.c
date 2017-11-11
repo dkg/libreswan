@@ -22,7 +22,6 @@
 #include <string.h>
 #include <stddef.h>
 #include <stdlib.h>
-#include <unistd.h>
 #include <errno.h>
 #include <arpa/inet.h> /* for inet_ntop */
 #include <arpa/nameser.h>
@@ -175,7 +174,7 @@ static bool get_keyval_chunk(struct p_dns_req *dnsr, ldns_rdf *rdf,
 			&bin_len, err_buf, sizeof(err_buf), 0);
 
 	if (ugh != NULL) {
-		loglog(RC_LOG_SERIOUS, "converting base64 pubkey to binary faild %s", ugh);
+		loglog(RC_LOG_SERIOUS, "converting base64 pubkey to binary failed %s", ugh);
 		ret = FALSE;
 	}
 
@@ -219,8 +218,9 @@ static err_t add_rsa_pubkey_to_pluto(struct p_dns_req *dnsr, ldns_rdf *rdf,
 	idtoa(&st->st_connection->spd.that.id, thatidbuf, sizeof(thatidbuf));
 	/* algorithm is hardcoded RSA -- PUBKEY_ALG_RSA */
 	if (dnsr->delete_exisiting_keys)  {
-		DBG(DBG_DNS, DBG_log("delete RSA public keys(s) from pluto id="
-					"%s", thatidbuf));
+		DBG(DBG_DNS,
+			DBG_log("delete RSA public keys(s) from pluto id=%s",
+				thatidbuf));
 		/* delete only once. then multiple keys could be added */
 		delete_public_keys(&pluto_pubkeys, &keyid, PUBKEY_ALG_RSA);
 		dnsr->delete_exisiting_keys = FALSE;
@@ -237,10 +237,11 @@ static err_t add_rsa_pubkey_to_pluto(struct p_dns_req *dnsr, ldns_rdf *rdf,
 					thatidbuf, ttl_buf,
 					enum_name(&dns_auth_level_names, al)));
 	} else {
-		DBG(DBG_DNS, DBG_log("add IPSECKEY pluto as publickey %s"
-					" dns query is %s %s %s", thatidbuf,
-					dnsr->qname, ttl_buf,
-					enum_name(&dns_auth_level_names, al)));
+		DBG(DBG_DNS,
+			DBG_log("add IPSECKEY pluto as publickey %s dns query is %s %s %s",
+				thatidbuf,
+				dnsr->qname, ttl_buf,
+				enum_name(&dns_auth_level_names, al)));
 	}
 
 	ugh = add_ipseckey(&keyid, al, PUBKEY_ALG_RSA, ttl, ttl_used,
@@ -270,11 +271,11 @@ static void validate_address(struct p_dns_req *dnsr, unsigned char *addr)
 		return;
 
 	if (!sameaddr(&ipaddr, &st->st_remoteaddr)) {
-		DBG(DBG_DNS, DBG_log(" forward address of IDi %s "
-					" do not match remote address "
-					"%s != %s", dnsr->qname,
-					ipstr(&st->st_remoteaddr, &ra),
-					ipstr(&ipaddr, &rb)));
+		DBG(DBG_DNS,
+			DBG_log(" forward address of IDi %s do not match remote address %s != %s",
+				dnsr->qname,
+				ipstr(&st->st_remoteaddr, &ra),
+				ipstr(&ipaddr, &rb)));
 		return;
 	}
 
@@ -295,7 +296,7 @@ static err_t parse_rr(struct p_dns_req *dnsr, ldns_pkt *ldnspkt)
 
 	dnsr->delete_exisiting_keys = TRUE; /* there could something to add */
 
-	for (i = (size_t) 0U; i < ldns_rr_list_rr_count(answers); i++) {
+	for (i = 0; i < ldns_rr_list_rr_count(answers); i++) {
 		ldns_rr *ans = ldns_rr_list_rr(answers, i);
 		ldns_rr_type atype = ldns_rr_get_type(ans);
 		ldns_rr_class qclass = ldns_rr_get_class(ans);
@@ -312,17 +313,18 @@ static err_t parse_rr(struct p_dns_req *dnsr, ldns_pkt *ldnspkt)
 		output = ldns_buffer_new((dnsr->wire_len * 8/6 + 2 +1) * 2);
 
 		if (qclass != dnsr->qclass) {
-			DBG(DBG_DNS, DBG_log("dns answer %zu qclass mismatch expect %s vs %s "
-						"ignore the answer now",
-						i, class_e->name, class->name));
+			DBG(DBG_DNS,
+				DBG_log("dns answer %zu qclass mismatch expect %s vs %s ignore the answer now",
+					i, class_e->name, class->name));
 			/* unexpected qclass. possibly malfuctioning dns */
 			continue;
 		}
 
 		rdf = ldns_rr_rdf(ans, 0);
 		if (rdf == NULL) {
-			DBG(DBG_DNS, DBG_log("dns answer %zu did not convert to rdf "
-						"ignore this answer", i));
+			DBG(DBG_DNS,
+				DBG_log("dns answer %zu did not convert to rdf ignore this answer",
+					i));
 			continue;
 		}
 
@@ -387,11 +389,9 @@ static err_t parse_rr(struct p_dns_req *dnsr, ldns_pkt *ldnspkt)
 
 		if (atype != dnsr->qtype) {
 			/* dns server stuffed extra rr types, ignore */
-			DBG(DBG_DNS, DBG_log("dns answer %zu qtype mismatch expect %d vs %d "
-						"ignore this answer",
-						i,  dnsr->qtype, atype));
-
-			continue;
+			DBG(DBG_DNS,
+				DBG_log("dns answer %zu qtype mismatch expect %d vs %d ignore this answer",
+					i,  dnsr->qtype, atype));
 		}
 	}
 
@@ -401,35 +401,35 @@ static err_t parse_rr(struct p_dns_req *dnsr, ldns_pkt *ldnspkt)
 /* This is called when dns response arrives */
 static err_t process_dns_resp(struct p_dns_req *dnsr)
 {
-	ldns_status status;
-	ldns_pkt *ldnspkt = NULL;
 
 	if (dnsr->rcode != 0 ) {
 		return dnsr->rcode_name;
 	}
 
-	status = ldns_wire2pkt(&ldnspkt, dnsr->wire, dnsr->wire_len);
+	ldns_pkt *ldnspkt = NULL;
+	ldns_status status = ldns_wire2pkt(&ldnspkt, dnsr->wire, dnsr->wire_len);
 
 	if (status != LDNS_STATUS_OK) {
 		return "ldns could not parse response wire format";
 	}
 
-	if (ldns_rr_list_rr_count(ldns_pkt_answer(ldnspkt)) == (size_t) 0U) {
-		return "dns response has 0 answer";
+	if (ldns_rr_list_rr_count(ldns_pkt_answer(ldnspkt)) == 0) {
+		return "DNS response contains no answer";
 	}
 
-	if (dnsr->secure == UB_EVENT_BOGUS)
-	{
-		return "unbound retunred BOGUS response ignore it.";
-	} else if (dnsr->secure == UB_EVENT_INSECURE) {
+	if (dnsr->secure == UB_EVENT_BOGUS) {
+		return "unbound returned BOGUS response - ignored";
+	}
+
+	if (dnsr->secure == UB_EVENT_INSECURE) {
 		/* PAUL add impair here */
-		return "unbound retunred INSECURE response ignore it.";
+		return "unbound returned INSECURE response - ignored";
 	}
 
 	return parse_rr(dnsr, ldnspkt);
 }
 
-void  free_ipseckey_dns( struct p_dns_req *d)
+void  free_ipseckey_dns(struct p_dns_req *d)
 {
 	struct p_dns_req **pp;
 	struct p_dns_req *p;
@@ -491,14 +491,13 @@ static void ipseckey_dbg_dns_resp(struct p_dns_req *dnsr)
 	struct timeval served_delta;
 
 	timersub(&dnsr->done_time, &dnsr->start_time, &served_delta);
-	DBG(DBG_CONTROL, DBG_log("%s returned %s "
-				"cache=%s elapsedtime %lu.%06lu",
-				dnsr->log_buf,
-				dnsr->rcode_name,
-				dnsr->cache_hit ? "yes" : "no",
-				(unsigned long)served_delta.tv_sec,
-				(unsigned long)(served_delta.tv_usec * 1000000)
-				));
+	DBG(DBG_CONTROL,
+		DBG_log("%s returned %s cache=%s elapsedtime %lu.%06lu",
+			dnsr->log_buf,
+			dnsr->rcode_name,
+			dnsr->cache_hit ? "yes" : "no",
+			(unsigned long)served_delta.tv_sec,
+			(unsigned long)(served_delta.tv_usec * 1000000)));
 
 	DBG(DBG_DNS, DBG_log("DNSSEC=%s %s MSG SIZE %d bytes",
 				(dnsr->secure == UB_EVNET_SECURE) ? "SECURE" :
@@ -716,36 +715,37 @@ static void ipseckey_ub_cb(void* mydata, int rcode,
 	dnsr->cb(dnsr);
 }
 
-static err_t build_dns_name(char *name_buf, /* array of len HOST_NAME_MAX */
+static err_t build_dns_name(char *name_buf, /* len SWAN_MAX_DOMAIN_LEN */
 		const struct id *id)
 {
 	/* note: all end in "." to suppress relative searches */
 	id = resolve_myid(id);
 
-	if (id->name.len >= HOST_NAME_MAX)
-		return "ID is too long >= HOST NAME MAX HOST_NAME_MAX";
+	if (id->name.len >= SWAN_MAX_DOMAIN_LEN)
+		return "ID is too long >= SWAN_MAX_DOMAIN_LEN";
 
 	switch (id->kind) {
 
 	case ID_IPV4_ADDR:
 	case ID_IPV6_ADDR:
-		addrtot(&id->ip_addr, 'r', name_buf, HOST_NAME_MAX);
+		addrtot(&id->ip_addr, 'r', name_buf, SWAN_MAX_DOMAIN_LEN);
 		break;
 
 	case ID_FQDN:
 		{
 			/* expected len of name_buf */
-			size_t buf_len = HOST_NAME_MAX;
+			size_t buf_len = SWAN_MAX_DOMAIN_LEN;
 			size_t il;
 
 			/* idtoa() will have an extra @ as prefix */
-			il = snprintf(name_buf, buf_len, "%s", id->name.ptr);
+
+			il = snprintf(name_buf, buf_len, "%.*s", (int)id->name.len, id->name.ptr);
 
 			/* strip trailing "." characters, then add one */
 			while (il > 0 && name_buf[il - 1] == '.')
 				il--;
 
-			if (il > HOST_NAME_MAX)
+			if (il > SWAN_MAX_DOMAIN_LEN)
 				return "FQDN is too long for domain name";
 
 			add_str(name_buf, buf_len, (name_buf + il), ".");
@@ -770,13 +770,13 @@ static struct p_dns_req *qry_st_init(struct state *st,
 	char b[CONN_INST_BUF];
 	char dbg_buf[512] ;  /* Arbitrary length. It is local */
 	struct p_dns_req *p;
-	char log_buf[HOST_NAME_MAX * 2]; /* this is local */
-	char qname[HOST_NAME_MAX];
+	char log_buf[SWAN_MAX_DOMAIN_LEN * 2]; /* this is local */
+	char qname[SWAN_MAX_DOMAIN_LEN];
 	err_t err;
 
 
 	err = build_dns_name(qname, &id);
-	if ( err !=  NULL) {
+	if (err !=  NULL) {
 		/* is there qtype to name lookup function  */
 		loglog(RC_LOG_SERIOUS, "could not build dns query name %s %d",
 				err, qtype);
@@ -830,7 +830,7 @@ static stf_status dns_qry_start(struct p_dns_req *dnsr)
 	ub_ret = ub_resolve_event(get_unbound_ctx(), dnsr->qname, dnsr->qtype,
 			dnsr->qclass, dnsr, ipseckey_ub_cb, &dnsr->ub_async_id);
 
-	if ( ub_ret !=  0) {
+	if (ub_ret !=  0) {
 		loglog(RC_LOG_SERIOUS, "unbound resolve call failed for %s",
 				dnsr->log_buf);
 		free_ipseckey_dns(dnsr);

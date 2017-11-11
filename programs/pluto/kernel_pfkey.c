@@ -974,7 +974,7 @@ bool pfkey_add_sa(const struct kernel_sa *sa, bool replace)
 					     sa->spi,   /* in network order */
 					     sa->replay_window,
 					     K_SADB_SASTATE_MATURE,
-					     sa->authalg, sa->encalg, 0),
+					     sa->authalg, sa->compalg, 0),
 			      "pfkey_sa Add SA", sa->text_said, extensions);
 	if (!success)
 		return FALSE;
@@ -1235,7 +1235,7 @@ bool pfkey_get_sa(const struct kernel_sa *sa, uint64_t *bytes,
 		return FALSE;
 	}
 
-	// get reply
+	/* get reply */
 
 	/* extract the sa info */
 	struct sadb_ext *replies[K_SADB_EXT_MAX + 1];
@@ -1249,11 +1249,11 @@ bool pfkey_get_sa(const struct kernel_sa *sa, uint64_t *bytes,
 		struct sadb_lifetime *sal = (struct sadb_lifetime *)
 			replies[K_SADB_EXT_LIFETIME_CURRENT];
 
-		//*allocations = sal->sadb_lifetime_allocations;
+		/* *allocations = sal->sadb_lifetime_allocations; */
 		*bytes = sal->sadb_lifetime_bytes;
 		*add_time = sal->sadb_lifetime_addtime;
-		//*use_time = sal->sadb_lifetime_usetime;
-		//*packets = sal->sadb_x_lifetime_packets;
+		/* *use_time = sal->sadb_lifetime_usetime; */
+		/* *packets = sal->sadb_x_lifetime_packets; */
 		return TRUE;
 	}
 	return FALSE;

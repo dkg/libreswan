@@ -75,11 +75,11 @@ stf_status start_dh_secretiv(struct pluto_crypto_req_cont *dh,
 
 	/* convert appropriate data to dhq */
 	dhq->auth = st->st_oakley.auth;
-	dhq->prf = st->st_oakley.prf;
+	dhq->prf = st->st_oakley.ta_prf;
 	dhq->oakley_group = oakley_group2;
 	dhq->role = role;
 	dhq->key_size = st->st_oakley.enckeylen / BITS_PER_BYTE;
-	dhq->salt_size = st->st_oakley.encrypter->salt_size;
+	dhq->salt_size = st->st_oakley.ta_encrypt->salt_size;
 
 	passert(r.pcr_d.dhq.oakley_group != OAKLEY_GROUP_invalid);
 	DBG(DBG_CONTROL | DBG_CRYPT,
@@ -95,7 +95,7 @@ stf_status start_dh_secretiv(struct pluto_crypto_req_cont *dh,
 
 	dhq->secret = st->st_sec_nss;
 
-	dhq->encrypter = st->st_oakley.encrypter;
+	dhq->encrypter = st->st_oakley.ta_encrypt;
 	DBG(DBG_CRYPT,
 	    DBG_log("Copying DH pub key pointer to be sent to a thread helper"));
 	dhq->pubk = st->st_pubk_nss;
@@ -153,11 +153,11 @@ stf_status start_dh_secret(struct pluto_crypto_req_cont *cn,
 
 	/* convert appropriate data to dhq */
 	dhq->auth = st->st_oakley.auth;
-	dhq->prf = st->st_oakley.prf;
+	dhq->prf = st->st_oakley.ta_prf;
 	dhq->oakley_group = oakley_group2;
 	dhq->role = role;
 	dhq->key_size = st->st_oakley.enckeylen / BITS_PER_BYTE;
-	dhq->salt_size = st->st_oakley.encrypter->salt_size;
+	dhq->salt_size = st->st_oakley.ta_encrypt->salt_size;
 
 	if (pss != NULL)
 		WIRE_CLONE_CHUNK(*dhq, pss, *pss);
@@ -170,7 +170,7 @@ stf_status start_dh_secret(struct pluto_crypto_req_cont *cn,
 
 	/*copying required encryption algo*/
 	/* XXX Avesh: you commented this out on purpose or by accident ?? */
-	/*dhq->encrypter = st->st_oakley.encrypter;*/
+	/*dhq->encrypter = st->st_oakley.ta_encrypt;*/
 	DBG(DBG_CRYPT,
 	    DBG_log("Copying DH pub key pointer to be sent to a thread helper"));
 	dhq->pubk = st->st_pubk_nss;
@@ -217,21 +217,18 @@ stf_status start_dh_v2(struct msg_digest *md,
 
 	DBG(DBG_CONTROLMORE,
 	    DBG_log("calculating skeyseed using prf=%s integ=%s cipherkey=%s",
-		    enum_name(&ikev2_trans_type_prf_names,
-			      st->st_oakley.prf->common.id[IKEv2_ALG_ID]),
-		    enum_name(&ikev2_trans_type_integ_names,
-			      st->st_oakley.integ_hash),
-		    enum_name(&ikev2_trans_type_encr_names,
-			      st->st_oakley.encrypt)));
+		    st->st_oakley.ta_prf->common.fqn,
+		    st->st_oakley.ta_integ->common.fqn,
+		    st->st_oakley.ta_encrypt->common.fqn));
 
 	/* convert appropriate data to dhq */
 	dhq->auth = st->st_oakley.auth;
-	dhq->prf = st->st_oakley.prf;
-	dhq->integ = st->st_oakley.integ;
-	dhq->oakley_group = st->st_oakley.group;
+	dhq->prf = st->st_oakley.ta_prf;
+	dhq->integ = st->st_oakley.ta_integ;
+	dhq->oakley_group = st->st_oakley.ta_dh;
 	dhq->role = role;
 	dhq->key_size = st->st_oakley.enckeylen / BITS_PER_BYTE;
-	dhq->salt_size = st->st_oakley.encrypter->salt_size;
+	dhq->salt_size = st->st_oakley.ta_encrypt->salt_size;
 
 	passert(r.pcr_d.dhq.oakley_group != OAKLEY_GROUP_invalid);
 
@@ -248,7 +245,7 @@ stf_status start_dh_v2(struct msg_digest *md,
 
 	dhq->secret = st->st_sec_nss;
 
-	dhq->encrypter = st->st_oakley.encrypter;
+	dhq->encrypter = st->st_oakley.ta_encrypt;
 	DBG(DBG_CRYPT,
 	    DBG_log("Copying DH pub key pointer to be sent to a thread helper"));
 	dhq->pubk = st->st_pubk_nss;

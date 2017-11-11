@@ -109,34 +109,6 @@ void lsw_random(size_t nbytes, unsigned char *buf);
 static const char *conv(const unsigned char *bits, size_t nbytes, int format);
 
 /*
- * bundle - bundle e and n into an RFC2537-format chunk_t
- */
-static char *base64_bundle(int f4, chunk_t modulus)
-{
-	/*
-	 * Pack the exponent into a byte array.
-	 */
-	chunk_t exponent;
-	u_int32_t f4_bytes = (u_int32_t)f4;
-
-	clonetochunk(exponent, &f4_bytes, sizeof(u_int32_t), "exponent");
-
-	/*
-	 * Create the resource record.
-	 */
-	char *bundle;
-	err_t err = rsa_pubkey_to_base64(exponent, modulus, &bundle);
-	if (err) {
-		fprintf(stderr, "%s: can't-happen bundle convert error `%s'\n",
-			progname, err);
-		exit(1);
-	}
-
-	freeanychunk(exponent);
-	return bundle;
-}
-
-/*
  * UpdateRNG - Updates NSS's PRNG with user generated entropy
  *
  * pluto and rsasigkey use the NSS crypto library as its random source.
@@ -243,16 +215,22 @@ int main(int argc, char *argv[])
 		}
 	}
 
+	/*
+	 * RSA-PSS requires keysize to be a multiple of 8 bits
+	 * (see PCS#1 v2.1).
+	 * We require a multiple of 16.  (??? why?)
+	 */
 	if (argv[optind] == NULL) {
-		/* default: spread bits between 3072 - 4096 in multiple's of 16 */
+		/* default keysize: a multiple of 16 in [3072,4096) */
 		srand(time(NULL));
-		nbits = 3072 + 16 * (rand() % 64);
+		nbits = 3072 + 16 * (rand() % (1024 / 16));
 	} else {
 		unsigned long u;
 		err_t ugh = ttoulb(argv[optind], 0, 10, INT_MAX, &u);
 
 		if (ugh != NULL) {
-			fprintf(stderr, "%s: keysize specification is malformed: %s\n",
+			fprintf(stderr,
+				"%s: keysize specification is malformed: %s\n",
 				progname, ugh);
 			exit(1);
 		}
@@ -260,16 +238,19 @@ int main(int argc, char *argv[])
 	}
 
 	if (nbits < MIN_KEYBIT ) {
-		fprintf(stderr, "%s: requested RSA key size of %d is too small - use %d or more\n",
+		fprintf(stderr,
+			"%s: requested RSA key size (%d) is too small - use %d or more\n",
 			progname, nbits, MIN_KEYBIT);
 		exit(1);
 	} else if (nbits > MAXBITS) {
-		fprintf(stderr, "%s: overlarge bit count (max %d)\n", progname,
-			MAXBITS);
+		fprintf(stderr,
+			"%s: requested RSA key size (%d) is too large - (max %d)\n",
+			progname, nbits, MAXBITS);
 		exit(1);
 	} else if (nbits % (BITS_PER_BYTE * 2) != 0) {
-		fprintf(stderr, "%s: bit count (%d) not multiple of %d\n", progname,
-			nbits, (int)BITS_PER_BYTE * 2);
+		fprintf(stderr,
+			"%s: requested RSA key size (%d) is not a multiple of %d\n",
+			progname, nbits, (int)BITS_PER_BYTE * 2);
 		exit(1);
 	}
 
@@ -372,9 +353,15 @@ void rsasigkey(int nbits, int seedbits, const struct lsw_conf_options *oco)
 
 	/* RFC2537/RFC3110-ish format */
 	{
-		char *bundle = base64_bundle(F4, public_modulus);
-		printf("\t#pubkey=%s\n", bundle);
-		pfree(bundle);
+		char *base64 = NULL;
+		err_t err = rsa_pubkey_to_base64(public_exponent, public_modulus, &base64);
+		if (err) {
+			fprintf(stderr, "%s: unexpected error encoding RSA public key '%s'\n",
+				progname, err);
+			exit(1);
+		}
+		printf("\t#pubkey=%s\n", base64);
+		pfree(base64);
 	}
 
 	printf("\tModulus: 0x%s\n", conv(public_modulus.ptr, public_modulus.len, 16));

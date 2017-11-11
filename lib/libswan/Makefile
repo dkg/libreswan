@@ -56,9 +56,19 @@ OBJS += addrtoa.o addrtot.o addrtypeof.o alg_info.o esp_info.o anyaddr.o \
 	lswnss.o \
 	lsw_pexpect_log.o \
 	lsw_passert_fail.o \
+	libreswan_log.o \
+	libreswan_loglog.o \
 	alg_byname.o
 
+OBJS += debug_enum_names.o
 OBJS += lswlog.o
+OBJS += lswlog_dbg.o
+OBJS += libreswan_DBG_dump.o
+OBJS += lswlog_pr_error.o
+OBJS += lswlog_source_line.o
+OBJS += lswlog_sanitized.o
+OBJS += lswlog_errno.o
+OBJS += lswlog_bytes.o
 
 # Crypto code:
 #

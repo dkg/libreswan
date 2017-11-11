@@ -455,8 +455,8 @@ static void prf_desc_check(const struct ike_alg *alg)
 		 * IKEv1 IKE algorithms must have a hasher - used for
 		 * things like computing IV.
 		 */
-		passert_ike_alg(alg, prf->common.id[IKEv1_OAKLEY_ID] == 0
-				     || prf->hasher != NULL);
+		passert_ike_alg(alg, (prf->common.id[IKEv1_OAKLEY_ID] < 0
+				      || prf->hasher != NULL));
 		prf->prf_ops->check(prf);
 	}
 	if (prf->hasher) {
@@ -513,14 +513,20 @@ static const struct integ_desc *integ_descriptors[] = {
 #ifdef USE_RIPEMD
 	&ike_alg_integ_hmac_ripemd_160_96,
 #endif
+	&ike_alg_integ_none,
 };
 
 static void integ_desc_check(const struct ike_alg *alg)
 {
 	const struct integ_desc *integ = integ_desc(alg);
-	passert_ike_alg(alg, integ->integ_keymat_size > 0);
-	passert_ike_alg(alg, integ->integ_output_size > 0);
-	if (integ->prf) {
+	if (integ == &ike_alg_integ_none) {
+		passert_ike_alg(alg, integ->integ_keymat_size == 0);
+		passert_ike_alg(alg, integ->integ_output_size == 0);
+	} else {
+		passert_ike_alg(alg, integ->integ_keymat_size > 0);
+		passert_ike_alg(alg, integ->integ_output_size > 0);
+	}
+	if (integ->prf != NULL) {
 		passert_ike_alg(alg, integ->integ_keymat_size == integ->prf->prf_key_size);
 		passert_ike_alg(alg, integ->integ_output_size <= integ->prf->prf_output_size);
 		passert_ike_alg(alg, prf_desc_is_ike(&integ->prf->common));
@@ -584,6 +590,7 @@ static const struct encrypt_desc *encrypt_descriptors[] = {
 #ifdef USE_CAST
 	&ike_alg_encrypt_cast_cbc,
 #endif
+	&ike_alg_encrypt_null_integ_aes_gmac,
 	&ike_alg_encrypt_null,
 };
 
@@ -600,8 +607,18 @@ bool encrypt_has_key_bit_length(const struct encrypt_desc *encrypt,
 
 unsigned encrypt_max_key_bit_length(const struct encrypt_desc *encrypt)
 {
-	/* by definition */
+	/* by definition: largest is first */
 	return encrypt->key_bit_lengths[0];
+}
+
+unsigned encrypt_min_key_bit_length(const struct encrypt_desc *encrypt)
+{
+	/* by definition: smallest is last */
+	unsigned smallest = 0;
+	for (const unsigned *keyp = encrypt->key_bit_lengths; *keyp; keyp++) {
+		smallest = *keyp;
+	}
+	return smallest;
 }
 
 static void encrypt_desc_check(const struct ike_alg *alg)
@@ -625,7 +642,14 @@ static void encrypt_desc_check(const struct ike_alg *alg)
 		passert_ike_alg(alg, encrypt->encrypt_ops->do_crypt == NULL || encrypt->aead_tag_size == 0);
 	}
 
-	if (encrypt->keydeflen) {
+	if (encrypt == &ike_alg_encrypt_null) {
+		passert_ike_alg(alg, encrypt->keydeflen == 0);
+		passert_ike_alg(alg, encrypt->common.id[IKEv1_ESP_ID] == ESP_NULL);
+		passert_ike_alg(alg, encrypt->common.id[IKEv2_ALG_ID] == IKEv2_ENCR_NULL);
+		passert_ike_alg(alg, encrypt->enc_blocksize == 1);
+		passert_ike_alg(alg, encrypt->wire_iv_size == 0);
+		passert_ike_alg(alg, encrypt->key_bit_lengths[0] == 0);
+	} else {
 		/*
 		 * Acceptable key bit-length checks (assuming the
 		 * algorithm isn't NULL):
@@ -637,6 +661,7 @@ static void encrypt_desc_check(const struct ike_alg *alg)
 		 * - provided there is a KEYDEFLEN (i.e., not the NULL
 		 *   algorithm), there is at least one key length.
 		 */
+		passert_ike_alg(alg, encrypt->keydeflen > 0);
 		passert_ike_alg(alg, encrypt->key_bit_lengths[0] > 0);
 		passert_ike_alg(alg, encrypt->key_bit_lengths[elemsof(encrypt->key_bit_lengths) - 1] == 0);
 		for (const unsigned *keyp = encrypt->key_bit_lengths; *keyp; keyp++) {
@@ -647,15 +672,6 @@ static void encrypt_desc_check(const struct ike_alg *alg)
 		 * the default appears in the list
 		 */
 		passert_ike_alg(alg, encrypt_has_key_bit_length(encrypt, encrypt->keydeflen));
-	} else {
-		/*
-		 * Interpret a zero default key as implying NULL encryption.
-		 */
-		passert_ike_alg(alg, encrypt->common.id[IKEv1_ESP_ID] == ESP_NULL
-			|| encrypt->common.id[IKEv2_ALG_ID] == IKEv2_ENCR_NULL);
-		passert_ike_alg(alg, encrypt->enc_blocksize == 1);
-		passert_ike_alg(alg, encrypt->wire_iv_size == 0);
-		passert_ike_alg(alg, encrypt->key_bit_lengths[0] == 0);
 	}
 }
 
@@ -713,7 +729,7 @@ static void dh_desc_check(const struct ike_alg *alg)
 	passert_ike_alg(alg, (dh->dhmke_ops == &ike_alg_nss_modp_dhmke_ops
 			      ? dh->common.id[IKEv1_ESP_ID] == dh->group
 			      : dh->dhmke_ops == &ike_alg_nss_ecp_dhmke_ops
-			      ? dh->common.id[IKEv1_ESP_ID] == 0
+			      ? dh->common.id[IKEv1_ESP_ID] < 0
 			      : FALSE));
 	/* always implemented */
 	passert_ike_alg(alg, dh->dhmke_ops != NULL);
@@ -752,7 +768,7 @@ static void check_enum_name(const char *what,
 			    const struct ike_alg *alg,
 			    int id, enum_names *enum_names)
 {
-	if (id > 0) {
+	if (id >= 0) {
 		if (enum_names == NULL) {
 			PASSERT_FAIL("%s %s %s has no enum names",
 				     alg->algo_type->name,
@@ -805,6 +821,32 @@ static void check_algorithm_table(const struct ike_alg_type *type)
 		passert_ike_alg(alg, alg->officname != NULL);
 		passert_ike_alg(alg, alg->algo_type == type);
 
+                /*
+		 * Don't allow 0 as an algorithm ID.
+		 *
+		 * The exception is integrity where the NULL algorithm
+		 * really is 0.
+		 */
+		if (alg != &ike_alg_integ_none.common) {
+			for (enum ike_alg_key key = IKE_ALG_KEY_FLOOR;
+			     key < IKE_ALG_KEY_ROOF; key++) {
+				passert_ike_alg(alg, alg->id[key] != 0);
+			}
+		}
+
+		/*
+		 * Only NULL integrity is allowed the value 0.
+		 */
+		if (alg != &ike_alg_integ_none.common) {
+			pexpect_ike_alg(alg, alg->id[IKEv1_OAKLEY_ID] != 0);
+			pexpect_ike_alg(alg, alg->id[IKEv1_ESP_ID] != 0);
+			pexpect_ike_alg(alg, alg->id[IKEv2_ALG_ID] != 0);
+			for (enum ike_alg_key key = IKE_ALG_KEY_FLOOR;
+			     key < IKE_ALG_KEY_ROOF; key++) {
+				pexpect_ike_alg(alg, alg->id[key] != 0);
+			}
+		}
+
 		/*
 		 * Validate an IKE_ALG's IKEv1 and IKEv2 enum_name
 		 * entries.
@@ -817,7 +859,7 @@ static void check_algorithm_table(const struct ike_alg_type *type)
 		for (enum ike_alg_key key = IKE_ALG_KEY_FLOOR;
 		     key < IKE_ALG_KEY_ROOF; key++) {
 			int id = alg->id[key];
-			if (id > 0) {
+			if (id >= 0) {
 				at_least_one_valid_id = TRUE;
 				check_enum_name(ike_alg_key_name(key),
 						alg, id,
@@ -849,9 +891,10 @@ static void check_algorithm_table(const struct ike_alg_type *type)
 		for (enum ike_alg_key key = IKE_ALG_KEY_FLOOR;
 		     key < IKE_ALG_KEY_ROOF; key++) {
 			int id = alg->id[key];
-			passert_ike_alg(alg, id == 0
-				|| (lookup_by_id(&scratch, key, id, LEMPTY)
-				    == NULL));
+			passert_ike_alg(alg,
+					id < 0
+					|| (lookup_by_id(&scratch, key, id, LEMPTY)
+					    == NULL));
 		}
 
 		/*
@@ -903,7 +946,7 @@ void ike_alg_snprint(char *buf, size_t sizeof_buf,
 		/*
 		 * magic number from eyeballing the longest name
 		 */
-		ssize_t pad = strlen(ike_alg_integ_sha2_512.common.fqn) - (buf - start);
+		ssize_t pad = strlen(ike_alg_encrypt_null_integ_aes_gmac.common.fqn) - (buf - start);
 		passert_ike_alg(alg, pad >= 0);
 		for (ssize_t i = 0; i < pad; i++) {
 			append(&buf, end, " ");
@@ -915,8 +958,8 @@ void ike_alg_snprint(char *buf, size_t sizeof_buf,
 	bool v1_ike;
 	bool v2_ike;
 	if (ike_alg_is_ike(alg)) {
-		v1_ike = alg->id[IKEv1_OAKLEY_ID] > 0;
-		v2_ike = (alg->id[IKEv2_ALG_ID] > 0);
+		v1_ike = alg->id[IKEv1_OAKLEY_ID] >= 0;
+		v2_ike = (alg->id[IKEv2_ALG_ID] >= 0);
 	} else {
 		v1_ike = FALSE;
 		v2_ike = FALSE;
@@ -929,14 +972,18 @@ void ike_alg_snprint(char *buf, size_t sizeof_buf,
 	    || alg->algo_type == &ike_alg_prf) {
 		v1_esp = v2_esp = v1_ah = v2_ah = FALSE;
 	} else if (alg->algo_type == &ike_alg_encrypt) {
-		v1_esp = alg->id[IKEv1_ESP_ID] > 0;
-		v2_esp = alg->id[IKEv2_ALG_ID] > 0;
+		v1_esp = alg->id[IKEv1_ESP_ID] >= 0;
+		v2_esp = alg->id[IKEv2_ALG_ID] >= 0;
 		v1_ah = FALSE;
 		v2_ah = FALSE;
-	} else if (alg->algo_type == &ike_alg_integ
-		   || alg->algo_type == &ike_alg_dh) {
-		v1_esp = v1_ah = alg->id[IKEv1_ESP_ID] > 0;
-		v2_esp = v2_ah = alg->id[IKEv2_ALG_ID] > 0;
+	} else if (alg->algo_type == &ike_alg_integ) {
+		v1_esp = alg->id[IKEv1_ESP_ID] >= 0;
+		v2_esp = alg->id[IKEv2_ALG_ID] >= 0;
+		/* NULL not allowed for AH */
+		v1_ah = v2_ah = integ_desc(alg)->integ_ikev1_ah_transform > 0;
+	} else if (alg->algo_type == &ike_alg_dh) {
+		v1_esp = v1_ah = alg->id[IKEv1_ESP_ID] >= 0;
+		v2_esp = v2_ah = alg->id[IKEv2_ALG_ID] >= 0;
 	} else {
 		bad_case(0);
 	}

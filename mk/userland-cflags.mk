@@ -40,16 +40,19 @@ USERLAND_CFLAGS+=$(OPTIMIZE_CFLAGS)
 # Dumping ground for an arbitrary set of flags.  Should probably be
 # separated out.
 ifeq ($(origin USERCOMPILE),undefined)
-USERCOMPILE= -fexceptions -fstack-protector-all -fno-strict-aliasing -fPIE -DPIE
+USERCOMPILE= -fstack-protector-all -fno-strict-aliasing -fPIE -DPIE
 endif
 USERLAND_CFLAGS+=$(USERCOMPILE)
 
 ifeq ($(USE_DNSSEC),true)
 USERLAND_CFLAGS+=-DUSE_DNSSEC
 UNBOUND_LDFLAGS ?= -lunbound -lldns
-ifdef DEFAULT_DNSSEC_ROOTKEY_FILE
+DEFAULT_DNSSEC_ROOTKEY_FILE ?= "/var/lib/unbound/root.key"
 USERLAND_CFLAGS+=-DDEFAULT_DNSSEC_ROOTKEY_FILE=\"${DEFAULT_DNSSEC_ROOTKEY_FILE}\"
 endif
+
+ifeq ($(USE_NIC_OFFLOAD),true)
+USERLAND_CFLAGS+= -DUSE_NIC_OFFLOAD
 endif
 
 ifeq ($(USE_FIPSCHECK),true)
@@ -120,9 +123,11 @@ USERLAND_CFLAGS+=-DUSE_CAMELLIA
 endif
 ifeq ($(USE_SERPENT),true)
 USERLAND_CFLAGS+=-DUSE_SERPENT
+LIBSERPENT=${OBJDIRTOP}/lib/libcrypto/libserpent/libserpent.a
 endif
 ifeq ($(USE_TWOFISH),true)
 USERLAND_CFLAGS+=-DUSE_TWOFISH
+LIBTWOFISH=${OBJDIRTOP}/lib/libcrypto/libtwofish/libtwofish.a
 endif
 ifeq ($(USE_CAST),true)
 USERLAND_CFLAGS+=-DUSE_CAST

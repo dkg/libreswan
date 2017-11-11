@@ -19,8 +19,8 @@
  * Copyright (C) 2013 Kim B. Heino <b@bbbs.net>
  * Copyright (C) 2012-2013 Paul Wouters <paul@libreswan.org>
  * Copyright (C) 2013 D. Hugh Redelmeier <hugh@mimosa.com>
- * Copyright (C) 2016 Andrew Cagney <cagney@gnu.org>
  * Copyright (C) 2017 Richard Guy Briggs <rgb@tricolour.ca>
+ * Copyright (C) 2016-2017 Andrew Cagney
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -51,8 +51,8 @@
 #include "libreswan.h" /* before xfrm.h otherwise break on F22 */
 #include "linux/xfrm.h" /* local (if configured) or system copy */
 
-#include <libreswan/pfkeyv2.h>
-#include <libreswan/pfkey.h>
+#include "libreswan/pfkeyv2.h"
+#include "libreswan/pfkey.h"
 
 #include "sysdep.h"
 #include "socketwrapper.h"
@@ -70,32 +70,36 @@
 #include "log.h"
 #include "whack.h"	/* for RC_LOG_SERIOUS */
 #include "kernel_alg.h"
+
+#include "ike_alg.h"
 #include "ike_alg_aes.h"
+#include "ike_alg_md5.h"
+#include "ike_alg_null.h"
+#include "ike_alg_sha1.h"
+#include "ike_alg_sha2.h"
+#include "ike_alg_ripemd.h"
+#include "ike_alg_3des.h"
+#include "ike_alg_camellia.h"
+#include "ike_alg_twofish.h"
+#include "ike_alg_serpent.h"
+#include "ike_alg_cast.h"
 
 /* required for Linux 2.6.26 kernel and later */
 #ifndef XFRM_STATE_AF_UNSPEC
 #define XFRM_STATE_AF_UNSPEC    32
 #endif
 
-#ifndef DEFAULT_UPDOWN
-# define DEFAULT_UPDOWN "ipsec _updown"
-#endif
-
 /* Minimum priority number in SPD used by pluto. */
 #define MIN_SPD_PRIORITY 1024
 
-#define NIC_OFFLOAD_UNKNOWN -2
-#define NIC_OFFLOAD_UNSUPPORTED -1
-
-struct aead_alg {
-	int id;
-	int icvlen;
-	const char *name;
-};
-
 static int netlinkfd = NULL_FD;
 static int netlink_bcast_fd = NULL_FD;
+
+#ifdef USE_NIC_OFFLOAD
+#define NIC_OFFLOAD_UNKNOWN (-2)
+#define NIC_OFFLOAD_UNSUPPORTED (-1)
 static int netlink_esp_hw_offload = NIC_OFFLOAD_UNKNOWN;
+#endif
 
 #define NE(x) { x, #x }	/* Name Entry -- shorthand for sparse_names */
 
@@ -130,47 +134,85 @@ static sparse_names xfrm_type_names = {
 #undef NE
 
 /* Authentication Algs */
-static sparse_names aalg_list = {
-	{ SADB_X_AALG_NULL, "digest_null" },
-	{ SADB_AALG_MD5HMAC, "md5" },
-	{ SADB_AALG_SHA1HMAC, "sha1" },
-	{ SADB_X_AALG_SHA2_256HMAC, "hmac(sha256)" },
-	{ SADB_X_AALG_SHA2_256HMAC_TRUNCBUG, "hmac(sha256)" },
-	{ SADB_X_AALG_SHA2_384HMAC, "hmac(sha384)" },
-	{ SADB_X_AALG_SHA2_512HMAC, "hmac(sha512)" },
-	{ SADB_X_AALG_RIPEMD160HMAC, "hmac(rmd160)" },
-	{ SADB_X_AALG_AES_XCBC_MAC, "xcbc(aes)" },
-	{ SADB_X_AALG_AES_CMAC, "cmac(aes)" },
-	/* { SADB_X_AALG_RSA - not supported by us */
+
+struct netlink_name {
+	const struct ike_alg *alg;
+	const char *name;
+};
+
+static const char *find_netlink_name(const struct netlink_name *table,
+				     const struct ike_alg *alg)
+{
+	for (; table->alg != NULL; table++) {
+		if (table->alg == alg) {
+			return table->name;
+		}
+	}
+	return NULL;
+}
+
+static const struct netlink_name integ_list[] = {
+	{ &ike_alg_integ_none.common, "digest_null" },
+	{ &ike_alg_integ_md5.common, "md5" },
+	{ &ike_alg_integ_sha1.common, "sha1" },
+	{ &ike_alg_integ_sha2_256.common, "hmac(sha256)" },
+	{ &ike_alg_integ_hmac_sha2_256_truncbug.common, "hmac(sha256)" },
+	{ &ike_alg_integ_sha2_384.common, "hmac(sha384)" },
+	{ &ike_alg_integ_sha2_512.common, "hmac(sha512)" },
+#ifdef USE_RIPEMD
+	{ &ike_alg_integ_hmac_ripemd_160_96.common, "hmac(rmd160)" },
+#endif
+	{ &ike_alg_integ_aes_xcbc.common, "xcbc(aes)" },
+	{ &ike_alg_integ_aes_cmac.common, "cmac(aes)" },
+	/* { &ike_alg_integ_RSA - not supported by us */
+#if 0
 	/*
 	 * GMAC's not supported by Linux kernel yet
-	 *
-	{ SADB_X_AALG_AH_AES_128_GMAC, "" },
-	{ SADB_X_AALG_AH_AES_192_GMAC, "" },
-	{ SADB_X_AALG_AH_AES_256_GMAC, "" },
 	 */
-	{ 0, sparse_end }
+	{ &ike_alg_integ_aes_128_gmac.common, NULL },
+	{ &ike_alg_integ_aes_192_gmac.common, NULL },
+	{ &ike_alg_integ_aes_256_gmac.common, NULL },
+#endif
+	{ NULL, NULL, }
 };
 
 /* Encryption algs */
-static sparse_names ealg_list = {
-	{ SADB_EALG_NULL, "cipher_null" },
-	/* { SADB_EALG_DESCBC, "des" }, obsoleted */
-	{ SADB_EALG_3DESCBC, "des3_ede" },
-	{ SADB_X_EALG_CASTCBC, "cast5" },
-	/* { SADB_X_EALG_BLOWFISHCBC, "blowfish" }, obsoleted */
-	{ SADB_X_EALG_AESCBC, "aes" },
-	{ SADB_X_EALG_AESCTR, "rfc3686(ctr(aes))" },
-	/*
-	 * Not yet implemented in Linux kernel xfrm_algo.c
-	{ SADB_X_EALG_SEEDCBC, "cbc(seed)" },
-	 */
-	{ SADB_X_EALG_CAMELLIACBC, "cbc(camellia)" },
-	/* 252 draft-ietf-ipsec-ciph-aes-cbc-00 */
-	{ SADB_X_EALG_SERPENTCBC, "serpent" },
-	/* 253 draft-ietf-ipsec-ciph-aes-cbc-00 */
-	{ SADB_X_EALG_TWOFISHCBC, "twofish" },
-	{ 0, sparse_end }
+static const struct netlink_name encrypt_list[] = {
+	{ &ike_alg_encrypt_null.common, "cipher_null" },
+	/* { &ike_alg_encrypt_DESCBC.common, "des" }, obsoleted */
+#ifdef USE_3DES
+	{ &ike_alg_encrypt_3des_cbc.common, "des3_ede" },
+#endif
+#ifdef USE_CAST
+	{ &ike_alg_encrypt_cast_cbc.common, "cast5" },
+#endif
+	/* { &ike_alg_encrypt_BLOWFISHCBC.common, "blowfish" }, obsoleted */
+#ifdef USE_AES
+	{ &ike_alg_encrypt_aes_cbc.common, "aes" },
+	{ &ike_alg_encrypt_aes_ctr.common, "rfc3686(ctr(aes))" },
+#endif
+#ifdef USE_CAMELLIA
+	{ &ike_alg_encrypt_camellia_cbc.common, "cbc(camellia)" },
+#endif
+#ifdef USE_SERPENT
+	{ &ike_alg_encrypt_serpent_cbc.common, "serpent" },
+#endif
+#ifdef USE_TWOFISH
+	{ &ike_alg_encrypt_twofish_cbc.common, "twofish" },
+#endif
+#ifdef USE_AES
+	{ &ike_alg_encrypt_aes_ccm_8.common, "rfc4309(ccm(aes))" },
+	{ &ike_alg_encrypt_aes_ccm_12.common, "rfc4309(ccm(aes))" },
+	{ &ike_alg_encrypt_aes_ccm_16.common, "rfc4309(ccm(aes))" },
+	{ &ike_alg_encrypt_aes_gcm_8.common, "rfc4106(gcm(aes))" },
+	{ &ike_alg_encrypt_aes_gcm_12.common, "rfc4106(gcm(aes))" },
+	{ &ike_alg_encrypt_aes_gcm_16.common, "rfc4106(gcm(aes))" },
+#endif
+#if 0
+	{ &ike_alg_encrypt_chacha20_poly1305.common, "rfc7539esp(chacha20,poly1305)" },
+#endif
+	{ &ike_alg_encrypt_null_integ_aes_gmac.common, "rfc4543(gcm(aes))" },
+	{ NULL, NULL, }
 };
 
 /* Compress Algs */
@@ -180,42 +222,6 @@ static sparse_names calg_list = {
 	{ SADB_X_CALG_LZJH, "lzjh" },
 	{ 0, sparse_end }
 };
-
-static const struct aead_alg aead_algs[] =
-{
-	{ .id = SADB_X_EALG_AES_CCM_ICV8, .icvlen = 8,
-		.name = "rfc4309(ccm(aes))" },
-	{ .id = SADB_X_EALG_AES_CCM_ICV12, .icvlen = 12,
-		.name = "rfc4309(ccm(aes))" },
-	{ .id = SADB_X_EALG_AES_CCM_ICV16, .icvlen = 16,
-		.name = "rfc4309(ccm(aes))" },
-	{ .id = SADB_X_EALG_AES_GCM_ICV8, .icvlen = 8,
-		.name = "rfc4106(gcm(aes))" },
-	{ .id = SADB_X_EALG_AES_GCM_ICV12, .icvlen = 12,
-		.name = "rfc4106(gcm(aes))" },
-	{ .id = SADB_X_EALG_AES_GCM_ICV16, .icvlen = 16,
-		.name = "rfc4106(gcm(aes))" },
-	{ .id = SADB_X_EALG_CHACHA20_POLY1305, .icvlen = 0, /* variable icvlen */
-		.name = "rfc7539esp(chacha20,poly1305)" },
-	/*
-	 * The Linux kernel has rfc4494 "cmac(aes)", except there is
-	 * no such AH/ESP transform, only an IKEv2 transform.
-	 * Presumably for AF_KEY use of userland
-	{ .id = SADB_X_EALG_NULL_AUTH_AES_GMAC, .icvlen = 16,
-		.name = "rfc4543(gcm(aes))" },
-	*/
-};
-
-static const struct aead_alg *get_aead_alg(int algid)
-{
-	unsigned int i;
-
-	for (i = 0; i < elemsof(aead_algs); i++)
-		if (aead_algs[i].id == algid)
-			return aead_algs + i;
-
-	return NULL;
-}
 
 /*
  * xfrm2ip - Take an xfrm and convert to an IP address
@@ -249,69 +255,6 @@ static void ip2xfrm(const ip_address *addr, xfrm_address_t *xaddr)
 		xaddr->a4 = addr->u.v4.sin_addr.s_addr;
 	else	/* Must be IPv6 */
 		memcpy(xaddr->a6, &addr->u.v6.sin6_addr, sizeof(xaddr->a6));
-}
-
-/*
- * Wire-in Authenticated Encryption with Associated Data transforms
- * (do both enc and auth in one transform); along with "aes(cmac)".
- */
-
-static void linux_pfkey_add_hard_wired(void)
-{
-	struct sadb_alg alg;
-
-	alg.sadb_alg_reserved = 0;
-
-	/* IPsec algos (encryption and authentication combined) */
-	alg.sadb_alg_ivlen = 8;
-	alg.sadb_alg_minbits = 128;
-	alg.sadb_alg_maxbits = 256;
-	alg.sadb_alg_id = SADB_X_EALG_AES_GCM_ICV8;
-	if (kernel_alg_add(SADB_SATYPE_ESP, SADB_EXT_SUPPORTED_ENCRYPT, &alg) != 1)
-		loglog(RC_LOG_SERIOUS, "Warning: failed to register AES_GCM_A(8) for ESP");
-
-	alg.sadb_alg_ivlen = 12;
-	alg.sadb_alg_minbits = 128;
-	alg.sadb_alg_maxbits = 256;
-	alg.sadb_alg_id = SADB_X_EALG_AES_GCM_ICV12;
-	if (kernel_alg_add(SADB_SATYPE_ESP, SADB_EXT_SUPPORTED_ENCRYPT, &alg) != 1)
-		loglog(RC_LOG_SERIOUS, "Warning: failed to register AES_GCM_B(12) for ESP");
-
-	alg.sadb_alg_ivlen = 16;
-	alg.sadb_alg_minbits = 128;
-	alg.sadb_alg_maxbits = 256;
-	alg.sadb_alg_id = SADB_X_EALG_AES_GCM_ICV16;
-	if (kernel_alg_add(SADB_SATYPE_ESP, SADB_EXT_SUPPORTED_ENCRYPT, &alg) != 1)
-		loglog(RC_LOG_SERIOUS, "Warning: failed to register AES_GCM_C(16) for ESP");
-
-	/* keeping aes-ccm behaviour intact as before */
-	alg.sadb_alg_ivlen = 8;
-	alg.sadb_alg_minbits = 128;
-	alg.sadb_alg_maxbits = 256;
-	alg.sadb_alg_id = SADB_X_EALG_AES_CCM_ICV8;
-	if (kernel_alg_add(SADB_SATYPE_ESP, SADB_EXT_SUPPORTED_ENCRYPT, &alg) != 1)
-		loglog(RC_LOG_SERIOUS, "Warning: failed to register AES_CCM_A(8) for ESP");
-
-	alg.sadb_alg_id = SADB_X_EALG_AES_CCM_ICV12;
-	if (kernel_alg_add(SADB_SATYPE_ESP, SADB_EXT_SUPPORTED_ENCRYPT, &alg) != 1)
-		loglog(RC_LOG_SERIOUS, "Warning: failed to register AES_CCM_B(12) for ESP");
-
-	alg.sadb_alg_id = SADB_X_EALG_AES_CCM_ICV16;
-	if (kernel_alg_add(SADB_SATYPE_ESP, SADB_EXT_SUPPORTED_ENCRYPT, &alg) != 1)
-		loglog(RC_LOG_SERIOUS, "Warning: failed to register AES_CCM_C(16) for ESP");
-
-	DBG(DBG_CONTROLMORE,
-		DBG_log("Registered AEAD AES CCM/GCM algorithms"));
-
-	/*
-	 * IPSEC integrity algorithms.
-	 */
-	kernel_integ_add(SADB_X_AALG_AES_CMAC_96, &ike_alg_integ_aes_cmac,
-			 "cmac(aes)");
-
-	DBG(DBG_CONTROLMORE,
-	    DBG_log("Registered new AUTH algorithms"));
-
 }
 
 /*
@@ -369,7 +312,21 @@ static void init_netlink(void)
 	 * it supports.  OTOH, the query might happen before the
 	 * crypto module gets loaded.
 	 */
-	linux_pfkey_add_hard_wired();
+	DBG(DBG_KERNEL,
+	    DBG_log("Hard-wiring new AEAD algorithms"));
+
+	kernel_encrypt_add(&ike_alg_encrypt_aes_gcm_8);
+	kernel_encrypt_add(&ike_alg_encrypt_aes_gcm_12);
+	kernel_encrypt_add(&ike_alg_encrypt_aes_gcm_16);
+	kernel_encrypt_add(&ike_alg_encrypt_aes_ccm_8);
+	kernel_encrypt_add(&ike_alg_encrypt_aes_ccm_12);
+	kernel_encrypt_add(&ike_alg_encrypt_aes_ccm_16);
+	kernel_encrypt_add(&ike_alg_encrypt_null_integ_aes_gmac);
+
+	DBG(DBG_KERNEL,
+	    DBG_log("Hard-wiring new INTEG algorithms"));
+
+	kernel_integ_add(&ike_alg_integ_aes_cmac);
 }
 
 struct nlm_resp {
@@ -407,9 +364,6 @@ static bool send_netlink_msg(struct nlmsghdr *hdr,
 	static uint32_t seq = 0;	/* STATIC */
 
 	netlink_errno = 0;
-
-	if (kern_interface == NO_KERNEL)
-		return TRUE;
 
 	hdr->nlmsg_seq = ++seq;
 	len = hdr->nlmsg_len;
@@ -770,7 +724,7 @@ static bool netlink_raw_eroute(const ip_address *this_host,
 		req.u.p.action = XFRM_POLICY_ALLOW;
 		if (policy == IPSEC_POLICY_DISCARD)
 			req.u.p.action = XFRM_POLICY_BLOCK;
-		// req.u.p.lft.soft_use_expires_seconds = deltasecs(use_lifetime);
+		/* req.u.p.lft.soft_use_expires_seconds = deltasecs(use_lifetime); */
 		req.u.p.lft.soft_byte_limit = XFRM_INF;
 		req.u.p.lft.soft_packet_limit = XFRM_INF;
 		req.u.p.lft.hard_byte_limit = XFRM_INF;
@@ -898,96 +852,91 @@ static bool netlink_raw_eroute(const ip_address *this_host,
 	return ok;
 }
 
+#ifdef USE_NIC_OFFLOAD
 static void netlink_find_offload_feature(const char *ifname)
 {
-	struct ethtool_sset_info *sset_info = NULL;
-	struct ethtool_gstrings *cmd = NULL;
-	struct ifreq ifr;
-	uint32_t sset_len, i;
-	char *str;
-	int err;
-
 	netlink_esp_hw_offload = NIC_OFFLOAD_UNSUPPORTED;
 
-	/* Determine number of device-features */
-	sset_info = alloc_bytes(sizeof(*sset_info) + sizeof(sset_info->data[0]), "ethtool_sset_info");
+	/*
+	 * Determine number of device-features.
+	 * Only one set queried so .data needs only one element
+	 * See <linux/ethtool.h>
+	 */
+	struct ethtool_sset_info *sset_info = 
+		alloc_bytes(sizeof(*sset_info) + 1 * sizeof(sset_info->data[0]),
+			"ethtool_sset_info");
 	sset_info->cmd = ETHTOOL_GSSET_INFO;
-	sset_info->sset_mask = 1ULL << ETH_SS_FEATURES;
+	sset_info->sset_mask = ((__u64)1) << ETH_SS_FEATURES;
+
+	struct ifreq ifr;
+
 	jam_str(ifr.ifr_name, sizeof(ifr.ifr_name), ifname);
 	ifr.ifr_data = (void *)sset_info;
-	err = ioctl(netlinkfd, SIOCETHTOOL, &ifr);
-	if (err != 0)
-		goto out;
+	if (ioctl(netlinkfd, SIOCETHTOOL, &ifr) == 0 &&
+	    sset_info->sset_mask == ((__u64)1) << ETH_SS_FEATURES)
+	{
+		/* Retrieve names of device-features */
+		uint32_t sset_len = sset_info->data[0];
 
-	if (sset_info->sset_mask != 1ULL << ETH_SS_FEATURES)
-		goto out;
-	sset_len = sset_info->data[0];
-
-	/* Retrieve names of device-features */
-	cmd = alloc_bytes(sizeof(*cmd) + ETH_GSTRING_LEN * sset_len, "ethtool_gstrings");
-	cmd->cmd = ETHTOOL_GSTRINGS;
-	cmd->string_set = ETH_SS_FEATURES;
-	jam_str(ifr.ifr_name, sizeof(ifr.ifr_name), ifname);
-	ifr.ifr_data = (void *)cmd;
-	err = ioctl(netlinkfd, SIOCETHTOOL, &ifr);
-	if (err)
-		goto out;
-
-	/* Look for the ESP_HW feature bit */
-	str = (char *)cmd->data;
-	for (i = 0; i < cmd->len; i++) {
-		if (strneq(str, "esp-hw-offload", ETH_GSTRING_LEN) == 0)
-			break;
-		str += ETH_GSTRING_LEN;
-	}
-	if (i >= cmd->len)
-		goto out;
-
-	netlink_esp_hw_offload = i;
-
-out:
-	if (sset_info != NULL)
-		pfree(sset_info);
-
-	if (cmd != NULL)
+		struct ethtool_gstrings *cmd =
+			alloc_bytes(sizeof(*cmd) + ETH_GSTRING_LEN * sset_len,
+				"ethtool_gstrings");
+		cmd->cmd = ETHTOOL_GSTRINGS;
+		cmd->string_set = ETH_SS_FEATURES;
+		jam_str(ifr.ifr_name, sizeof(ifr.ifr_name), ifname);
+		ifr.ifr_data = (void *)cmd;
+		if (ioctl(netlinkfd, SIOCETHTOOL, &ifr) == 0) {
+			/* Look for the ESP_HW feature bit */
+			char *str = (char *)cmd->data;
+			for (uint32_t i = 0; i < cmd->len; i++) {
+				if (strneq(str, "esp-hw-offload", ETH_GSTRING_LEN)) {
+					netlink_esp_hw_offload = i;
+					break;
+				}
+				str += ETH_GSTRING_LEN;
+			}
+		}
 		pfree(cmd);
+	}
+	pfree(sset_info);
 }
 
-static enum iface_nic_offload netlink_detect_offload(const char *ifname)
+static bool netlink_detect_offload(const char *ifname)
 {
-	enum iface_nic_offload ret = IFNO_UNSUPPORTED;
-	struct ethtool_gfeatures *cmd;
-	uint32_t feature_bit;
-	struct ifreq ifr;
-	int blocks;
-
 	/*
 	 * Kernel requires a real interface in order to query the kernel-wide
-	 * capability, so we do it here on first invocation
+	 * capability, so we delay until our first invocation.
 	 */
 	if (netlink_esp_hw_offload == NIC_OFFLOAD_UNKNOWN)
 		netlink_find_offload_feature(ifname);
 
 	if (netlink_esp_hw_offload == NIC_OFFLOAD_UNSUPPORTED)
-		return ret;
+		return FALSE;
 
-	/* Feature is supported by kernel. Query device features */
-	blocks = (netlink_esp_hw_offload + 31) / 32;
-	feature_bit = 1 << (netlink_esp_hw_offload % 31);
+	/* Feature is supported by kernel. Query device feature. */
+	passert(netlink_esp_hw_offload >= 0);	/* it's a bit number */
 
-	cmd = alloc_bytes(sizeof(*cmd) + sizeof(cmd->features[0]) * blocks, "ethtool_gfeatures");
+	unsigned block = netlink_esp_hw_offload / 32;
+	uint32_t feature_bit = ((uint32_t) 1) << (netlink_esp_hw_offload % 32);
+
+	struct ethtool_gfeatures *cmd =
+		alloc_bytes(sizeof(*cmd) + sizeof(cmd->features[0]) * (block+1),
+			"ethtool_gfeatures");
+	struct ifreq ifr;
 	jam_str(ifr.ifr_name, sizeof(ifr.ifr_name), ifname);
 	ifr.ifr_data = (void *)cmd;
 	cmd->cmd = ETHTOOL_GFEATURES;
-	cmd->size = blocks;
-	if ((ioctl(netlinkfd, SIOCETHTOOL, &ifr) == 0) &&
-		(cmd->features[blocks-1].active & feature_bit))
-		ret = IFNO_SUPPORTED;
+	cmd->size = block + 1;
+
+	/* ??? something is very wrong if this ioctl fails */
+	bool ret = ioctl(netlinkfd, SIOCETHTOOL, &ifr) == 0 &&
+		(cmd->features[block].active & feature_bit) != 0;
 
 	pfree(cmd);
 
 	return ret;
 }
+#endif /* USE_NIC_OFFLOAD */
 
 /*
  * netlink_add_sa - Add an SA into the kernel SPDB via netlink
@@ -1004,7 +953,6 @@ static bool netlink_add_sa(const struct kernel_sa *sa, bool replace)
 		char data[MAX_NETLINK_DATA_SIZE];
 	} req;
 	struct rtattr *attr;
-	const struct aead_alg *aead;
 	int ret;
 
 	zero(&req);
@@ -1165,23 +1113,13 @@ static bool netlink_add_sa(const struct kernel_sa *sa, bool replace)
 	}
 
 	if (sa->authkeylen != 0) {
-		const char *name;
-		/*
-		 * SA should just contain a pointer to struct
-		 * kernel_integ
-		 */
-		const struct kernel_integ *ki =
-			kernel_integ_by_ikev1_auth_attribute(sa->authalg);
-		if (ki != NULL) {
-			name = ki->netlink_name;
-		} else {
-			name = sparse_name(aalg_list, sa->authalg);
-		}
 
+		const char *name = find_netlink_name(integ_list,
+						     &sa->integ->common);
 		if (name == NULL) {
 			loglog(RC_LOG_SERIOUS,
-				"NETKEY/XFRM: unknown authentication algorithm: %u",
-				sa->authalg);
+				"NETKEY/XFRM: unknown authentication algorithm: %s",
+				sa->integ->common.fqn);
 			return FALSE;
 		}
 
@@ -1194,86 +1132,39 @@ static bool netlink_add_sa(const struct kernel_sa *sa, bool replace)
 		 * this.
 		 */
 
-		switch (sa->authalg)
-		{
-		case AUTH_ALGORITHM_HMAC_SHA2_256_TRUNCBUG:
-		case AUTH_ALGORITHM_HMAC_SHA2_256:
-		case AUTH_ALGORITHM_HMAC_SHA2_384:
-		case AUTH_ALGORITHM_HMAC_SHA2_512:
-		{
-			struct xfrm_algo_auth algo;
+		struct xfrm_algo_auth algo = {
+			.alg_key_len = sa->integ->integ_keymat_size * BITS_PER_BYTE,
+			.alg_trunc_len = sa->integ->integ_output_size * BITS_PER_BYTE,
+		};
 
-			algo.alg_key_len = sa->authkeylen * BITS_PER_BYTE;
+		attr->rta_type = XFRMA_ALG_AUTH_TRUNC;
+		attr->rta_len = RTA_LENGTH(sizeof(algo) + sa->authkeylen);
 
-			switch (sa->authalg) {
-			case AUTH_ALGORITHM_HMAC_SHA2_256:
-				algo.alg_trunc_len = 128;
-				break;
+		fill_and_terminate(algo.alg_name, name, sizeof(algo.alg_name));
+		memcpy(RTA_DATA(attr), &algo, sizeof(algo));
+		memcpy((char *)RTA_DATA(attr) + sizeof(algo),
+		       sa->authkey, sa->authkeylen);
 
-			case AUTH_ALGORITHM_HMAC_SHA2_256_TRUNCBUG:
-				algo.alg_trunc_len = 96;
-				break;
-
-			case AUTH_ALGORITHM_HMAC_SHA2_384:
-				algo.alg_trunc_len = 192;
-				break;
-
-			case AUTH_ALGORITHM_HMAC_SHA2_512:
-				algo.alg_trunc_len = 256;
-				break;
-			}
-
-			attr->rta_type = XFRMA_ALG_AUTH_TRUNC;
-			attr->rta_len = RTA_LENGTH(
-				sizeof(algo) + sa->authkeylen);
-
-			strncpy(algo.alg_name, name, sizeof(algo.alg_name));
-			memcpy(RTA_DATA(attr), &algo, sizeof(algo));
-			memcpy((char *)RTA_DATA(attr) + sizeof(algo),
-				sa->authkey, sa->authkeylen);
-
-			req.n.nlmsg_len += attr->rta_len;
-			attr = (struct rtattr *)((char *)attr + attr->rta_len);
-			break;
-		}
-		default:
-		{
-			struct xfrm_algo algo_old;
-
-			algo_old.alg_key_len = sa->authkeylen * BITS_PER_BYTE;
-			attr->rta_type = XFRMA_ALG_AUTH;
-			attr->rta_len = RTA_LENGTH(
-				sizeof(algo_old) + sa->authkeylen);
-			strncpy(algo_old.alg_name, name, sizeof(algo_old.alg_name));
-			memcpy(RTA_DATA(attr), &algo_old, sizeof(algo_old));
-			memcpy((char *)RTA_DATA(attr) + sizeof(algo_old),
-				sa->authkey,
-				sa->authkeylen);
-
-			req.n.nlmsg_len += attr->rta_len;
-			attr = (struct rtattr *)((char *)attr + attr->rta_len);
-			break;
-		}
-		}
+		req.n.nlmsg_len += attr->rta_len;
+		attr = (struct rtattr *)((char *)attr + attr->rta_len);
 	}
 
 	/*
 	 * ??? why does IPCOMP trump aead and ESP?
 	 *  Shouldn't all be bundled?
 	 */
-	aead = get_aead_alg(sa->encalg);
 	if (sa->esatype == ET_IPCOMP) {
 		struct xfrm_algo algo;
-		const char *name = sparse_name(calg_list, sa->encalg);
+		const char *name = sparse_name(calg_list, sa->compalg);
 
 		if (name == NULL) {
 			loglog(RC_LOG_SERIOUS,
 				"unknown compression algorithm: %u",
-				sa->encalg);
+				sa->compalg);
 			return FALSE;
 		}
 
-		strncpy(algo.alg_name, name, sizeof(algo.alg_name));
+		fill_and_terminate(algo.alg_name, name, sizeof(algo.alg_name));
 		algo.alg_key_len = 0;
 
 		attr->rta_type = XFRMA_ALG_COMP;
@@ -1283,58 +1174,62 @@ static bool netlink_add_sa(const struct kernel_sa *sa, bool replace)
 
 		req.n.nlmsg_len += attr->rta_len;
 		attr = (struct rtattr *)((char *)attr + attr->rta_len);
-	} else if (aead != NULL) {
-		struct xfrm_algo_aead algo;
-
-		strncpy(algo.alg_name, aead->name, sizeof(algo.alg_name));
-		algo.alg_key_len = sa->enckeylen * BITS_PER_BYTE;
-		algo.alg_icv_len = aead->icvlen * BITS_PER_BYTE;
-
-		attr->rta_type = XFRMA_ALG_AEAD;
-		attr->rta_len = RTA_LENGTH(sizeof(algo) + sa->enckeylen);
-
-		memcpy(RTA_DATA(attr), &algo, sizeof(algo));
-		memcpy((char *)RTA_DATA(attr) + sizeof(algo), sa->enckey,
-			sa->enckeylen);
-
-		req.n.nlmsg_len += attr->rta_len;
-		attr = (struct rtattr *)((char *)attr + attr->rta_len);
 	} else if (sa->esatype == ET_ESP) {
-		struct xfrm_algo algo;
-		const char *name = sparse_name(ealg_list, sa->encalg);
-
+		const char *name = find_netlink_name(encrypt_list,
+						     &sa->encrypt->common);
 		if (name == NULL) {
 			loglog(RC_LOG_SERIOUS,
-				"unknown encryption algorithm: %u",
-				sa->encalg);
+				"unknown encryption algorithm: %s",
+				sa->encrypt->common.fqn);
 			return FALSE;
 		}
 
-		strncpy(algo.alg_name, name, sizeof(algo.alg_name));
-		algo.alg_key_len = sa->enckeylen * BITS_PER_BYTE;
+		if (ike_alg_is_aead(sa->encrypt)) {
+			struct xfrm_algo_aead algo;
 
-		attr->rta_type = XFRMA_ALG_CRYPT;
-		attr->rta_len = RTA_LENGTH(sizeof(algo) + sa->enckeylen);
+			fill_and_terminate(algo.alg_name, name, sizeof(algo.alg_name));
+			algo.alg_key_len = sa->enckeylen * BITS_PER_BYTE;
+			algo.alg_icv_len = sa->encrypt->aead_tag_size * BITS_PER_BYTE;
 
-		memcpy(RTA_DATA(attr), &algo, sizeof(algo));
-		memcpy((char *)RTA_DATA(attr) + sizeof(algo), sa->enckey,
-			sa->enckeylen);
+			attr->rta_type = XFRMA_ALG_AEAD;
+			attr->rta_len = RTA_LENGTH(sizeof(algo) + sa->enckeylen);
 
-		req.n.nlmsg_len += attr->rta_len;
-		attr = (struct rtattr *)((char *)attr + attr->rta_len);
+			memcpy(RTA_DATA(attr), &algo, sizeof(algo));
+			memcpy((char *)RTA_DATA(attr) + sizeof(algo), sa->enckey,
+			       sa->enckeylen);
 
-		/* Traffic Flow Confidentiality is only for ESP tunnel mode */
-		if (sa->tfcpad != 0 &&
-		    sa->encapsulation == ENCAPSULATION_MODE_TUNNEL) {
-			DBG(DBG_KERNEL, DBG_log("netlink: setting TFC to %"PRIu32" (up to PMTU",
-				sa->tfcpad));
-
-			attr->rta_type = XFRMA_TFCPAD;
-			attr->rta_len = RTA_LENGTH(sizeof(sa->tfcpad));
-			memcpy(RTA_DATA(attr), &sa->tfcpad, sizeof(sa->tfcpad));
 			req.n.nlmsg_len += attr->rta_len;
 			attr = (struct rtattr *)((char *)attr + attr->rta_len);
 
+		} else {
+			struct xfrm_algo algo;
+
+			fill_and_terminate(algo.alg_name, name, sizeof(algo.alg_name));
+			algo.alg_key_len = sa->enckeylen * BITS_PER_BYTE;
+
+			attr->rta_type = XFRMA_ALG_CRYPT;
+			attr->rta_len = RTA_LENGTH(sizeof(algo) + sa->enckeylen);
+
+			memcpy(RTA_DATA(attr), &algo, sizeof(algo));
+			memcpy((char *)RTA_DATA(attr) + sizeof(algo), sa->enckey,
+			sa->enckeylen);
+
+			req.n.nlmsg_len += attr->rta_len;
+			attr = (struct rtattr *)((char *)attr + attr->rta_len);
+
+			/* Traffic Flow Confidentiality is only for ESP tunnel mode */
+			if (sa->tfcpad != 0 &&
+			    sa->encapsulation == ENCAPSULATION_MODE_TUNNEL) {
+				DBG(DBG_KERNEL, DBG_log("netlink: setting TFC to %"PRIu32" (up to PMTU",
+							sa->tfcpad));
+
+				attr->rta_type = XFRMA_TFCPAD;
+				attr->rta_len = RTA_LENGTH(sizeof(sa->tfcpad));
+				memcpy(RTA_DATA(attr), &sa->tfcpad, sizeof(sa->tfcpad));
+				req.n.nlmsg_len += attr->rta_len;
+				attr = (struct rtattr *)((char *)attr + attr->rta_len);
+
+			}
 		}
 	}
 
@@ -1352,10 +1247,11 @@ static bool netlink_add_sa(const struct kernel_sa *sa, bool replace)
 		memcpy(RTA_DATA(attr), &natt, sizeof(natt));
 
 		req.n.nlmsg_len += attr->rta_len;
-		/* ??? why is this not used? */
+		/* attr not subsequently used unless USE_NIC_OFFLOAD or HAVE_LABELED_IPSEC */
 		attr = (struct rtattr *)((char *)attr + attr->rta_len);
 	}
 
+#ifdef USE_NIC_OFFLOAD
 	if (sa->nic_offload_dev) {
 		struct xfrm_user_offload xuo = { 0, 0 };
 
@@ -1370,8 +1266,10 @@ static bool netlink_add_sa(const struct kernel_sa *sa, bool replace)
 		memcpy(RTA_DATA(attr), &xuo, sizeof(xuo));
 
 		req.n.nlmsg_len += attr->rta_len;
+		/* attr not subsequently used unless HAVE_LABELED_IPSEC */
 		attr = (struct rtattr *)((char *)attr + attr->rta_len);
 	}
+#endif
 
 #ifdef HAVE_LABELED_IPSEC
 	if (sa->sec_ctx != NULL) {
@@ -1392,6 +1290,7 @@ static bool netlink_add_sa(const struct kernel_sa *sa, bool replace)
 			sa->sec_ctx->sec_ctx_value, len);
 
 		req.n.nlmsg_len += attr->rta_len;
+		/* attr not subsequently used */
 		attr = (struct rtattr *)((char *)attr + attr->rta_len);
 	}
 #endif
@@ -1698,7 +1597,7 @@ static void netlink_policy_expire(struct nlmsghdr *n)
 	upe = NLMSG_DATA(n);
 	xfrm2ip(&upe->pol.sel.saddr, &src, upe->pol.sel.family);
 	xfrm2ip(&upe->pol.sel.daddr, &dst, upe->pol.sel.family);
-	DBG( DBG_KERNEL, {
+	DBG(DBG_KERNEL, {
 			ipstr_buf a;
 			ipstr_buf b;
 			DBG_log("%s src %s/%u dst %s/%u dir %d index %d",
@@ -2134,7 +2033,6 @@ static void netlink_process_raw_ifaces(struct raw_iface *rifaces)
 	 */
 	for (ifp = rifaces; ifp != NULL; ifp = ifp->next) {
 		struct raw_iface *v = NULL;	/* matching ipsecX interface */
-		struct raw_iface fake_v;	/* v might point here */
 		bool after = FALSE;	/* has vfp passed ifp on the list? */
 		bool bad = FALSE;
 		struct raw_iface *vfp;
@@ -2205,30 +2103,13 @@ static void netlink_process_raw_ifaces(struct raw_iface *rifaces)
 
 		/* what if we didn't find a virtual interface? */
 		if (v == NULL) {
-			if (kern_interface == NO_KERNEL) {
-				/*
-				 * kludge for testing:
-				 * invent a virtual device
-				 */
-				static const char fvp[] = "virtual";
-
-				fake_v = *ifp;
-				passert(sizeof(fake_v.name) > sizeof(fvp));
-				strcpy(fake_v.name, fvp);
-				addrtot(&ifp->addr, 0,
-					fake_v.name + sizeof(fvp) - 1,
-					sizeof(fake_v.name) -
-					(sizeof(fvp) - 1));
-				v = &fake_v;
-			} else {
-				DBG(DBG_CONTROL, {
-					ipstr_buf b;
-					DBG_log("IP interface %s %s has no matching ipsec* interface -- ignored",
-						ifp->name,
-						ipstr(&ifp->addr, &b));
-				});
-				continue;
-			}
+			DBG(DBG_CONTROL, {
+				ipstr_buf b;
+				DBG_log("IP interface %s %s has no matching ipsec* interface -- ignored",
+					ifp->name,
+					ipstr(&ifp->addr, &b));
+			});
+			continue;
 		}
 
 		/*
@@ -2279,7 +2160,9 @@ static void netlink_process_raw_ifaces(struct raw_iface *rifaces)
 				id->id_vname = clone_str(v->name,
 							"virtual device name netlink");
 				id->id_count++;
+#ifdef USE_NIC_OFFLOAD
 				id->id_nic_offload = netlink_detect_offload(ifp->name);
+#endif
 
 				q->ip_addr = ifp->addr;
 				q->fd = fd;
@@ -2427,14 +2310,99 @@ static bool netkey_do_command(const struct connection *c, const struct spd_route
 				"PLUTO_VERB='%s%s' %s%s 2>&1",
 				verb, verb_suffix,
 				common_shell_out_str,
-				sr->this.updown == NULL ?
-				DEFAULT_UPDOWN : sr->this.updown)) {
+				sr->this.updown)) {
 		loglog(RC_LOG_SERIOUS, "%s%s command too long!", verb,
 			verb_suffix);
 		return FALSE;
 	}
 
 	return invoke_command(verb, verb_suffix, cmd);
+}
+
+/* add bypass policies/holes icmp */
+static bool netlink_bypass_policy(int family, int proto, int port)
+{
+	struct {
+		struct nlmsghdr n;
+		union {
+			struct xfrm_userpolicy_info p;
+			struct xfrm_userpolicy_id id;
+		} u;
+		char data[MAX_NETLINK_DATA_SIZE];
+	} req;
+
+	zero(&req);
+
+	req.n.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+
+	req.n.nlmsg_type = XFRM_MSG_UPDPOLICY;
+	req.n.nlmsg_len = NLMSG_ALIGN(NLMSG_LENGTH(sizeof(req.u.p)));
+
+	req.u.p.dir = XFRM_POLICY_IN;
+	req.u.p.priority = 1; /* give admin prio 0 as override */
+	req.u.p.action = XFRM_POLICY_ALLOW;
+	req.u.p.share = XFRM_SHARE_ANY;
+
+	req.u.p.lft.soft_byte_limit = XFRM_INF;
+	req.u.p.lft.soft_packet_limit = XFRM_INF;
+	req.u.p.lft.hard_byte_limit = XFRM_INF;
+	req.u.p.lft.hard_packet_limit = XFRM_INF;
+
+	req.u.p.sel.proto = proto;
+	req.u.p.sel.family = family;
+
+	const char* text = "add port bypass";
+
+	if (proto == IPPROTO_ICMPV6) {
+		u_int16_t icmp_type;
+		u_int16_t icmp_code;
+
+		icmp_type = port >> 8;
+		icmp_code = port & 0xFF;
+		req.u.p.sel.sport = htons(icmp_type);
+		req.u.p.sel.dport = htons(icmp_code);
+		req.u.p.sel.sport_mask = 0xffff;
+
+		if (!netlink_policy(&req.n, 1, text))
+			return FALSE;
+
+		req.u.p.dir = XFRM_POLICY_FWD;
+
+		if (!netlink_policy(&req.n, 1, text))
+			return FALSE;
+
+		req.u.p.dir  = XFRM_POLICY_OUT;
+
+		if (!netlink_policy(&req.n, 1, text))
+			return FALSE;
+
+	} else {
+		req.u.p.sel.dport = htons(port);
+		req.u.p.sel.dport_mask = 0xffff;
+
+		if (!netlink_policy(&req.n, 1, text))
+			return FALSE;
+
+		req.u.p.dir  = XFRM_POLICY_OUT;
+
+		req.u.p.sel.sport = htons(port);
+		req.u.p.sel.sport_mask = 0xffff;
+		req.u.p.sel.dport = 0;
+		req.u.p.sel.dport_mask = 0;
+
+		if (!netlink_policy(&req.n, 1, text))
+			return FALSE;
+	}
+
+	return TRUE;
+}
+
+static bool netlink_v6holes()
+{
+	bool ok = netlink_bypass_policy(AF_INET6, IPPROTO_ICMPV6, ICMP_NEIGHBOR_DISCOVERY);
+	ok &= netlink_bypass_policy(AF_INET6, IPPROTO_ICMPV6, ICMP_NEIGHBOR_SOLICITATION);
+
+	return ok;
 }
 
 const struct kernel_ops netkey_kernel_ops = {
@@ -2470,4 +2438,5 @@ const struct kernel_ops netkey_kernel_ops = {
 	.remove_orphaned_holds = NULL, /* only used for klips /proc scanner */
 	.overlap_supported = FALSE,
 	.sha2_truncbug_support = TRUE,
+	.v6holes = netlink_v6holes,
 };

@@ -642,7 +642,7 @@ stf_status send_crypto_helper_request(struct pluto_crypto_req *r,
 	DBG(DBG_CONTROLMORE, DBG_log("#%lu %s:%u st->st_calculating = TRUE;", st->st_serialno, __FUNCTION__, __LINE__));
 	st->st_calculating = TRUE;
 	delete_event(st);
-	event_schedule(EVENT_CRYPTO_FAILED, EVENT_CRYPTO_FAILED_DELAY, st);
+	event_schedule(EVENT_CRYPTO_TIMEOUT, EVENT_CRYPTO_TIMEOUT_DELAY, st);
 
 	return STF_SUSPEND;
 }
@@ -1070,14 +1070,11 @@ void init_crypto_helpers(int nhelpers)
 		ncpu_online = sysctl(mib, 2, &numcpu, &len, NULL, 0);
 #endif
 
+		/* magic numbers from experience */
 		if (ncpu_online > 2) {
 			nhelpers = ncpu_online - 1;
 		} else {
-			/*
-			 * if we have 2 CPUs or less, then create 1 helper, since
-			 * we still want to deal with head-of-queue problem.
-			 */
-			nhelpers = 1;
+			nhelpers = ncpu_online * 2;
 		}
 	}
 

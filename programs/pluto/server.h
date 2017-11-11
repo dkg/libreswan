@@ -39,12 +39,8 @@ extern enum seccomp_mode pluto_seccomp_mode;
 extern unsigned int pluto_max_halfopen; /* Max allowed half-open IKE SA's before refusing */
 extern unsigned int pluto_ddos_threshold; /* Max incoming IKE before activating DCOOKIES */
 extern deltatime_t pluto_shunt_lifetime; /* lifetime before we cleanup bare shunts (for OE) */
-
-/* device_nic_offload: NIC offload capability of an interface */
-enum iface_nic_offload {
-	IFNO_UNSUPPORTED,
-	IFNO_SUPPORTED,
-};
+extern unsigned int pluto_sock_bufsize; /* pluto IKE socket buffer */
+extern bool pluto_sock_errqueue; /* Enable MSG_ERRQUEUE on IKE socket */
 
 /* interface: a terminal point for IKE traffic, IPsec transport mode
  * and IPsec tunnels.
@@ -63,7 +59,9 @@ struct iface_dev {
 	int id_count;
 	char *id_vname; /* virtual (ipsec) device name */
 	char *id_rname; /* real device name */
-	enum iface_nic_offload id_nic_offload;
+#ifdef USE_NIC_OFFLOAD
+	bool id_nic_offload;
+#endif
 };
 
 struct iface_port {
@@ -74,7 +72,7 @@ struct iface_port {
 	struct iface_port *next;
 	bool ike_float;
 	enum { IFN_ADD, IFN_KEEP, IFN_DELETE } change;
-	struct event *ev;
+	struct pluto_event *pev;
 };
 
 extern struct iface_port  *interfaces;   /* public interfaces */
@@ -90,8 +88,9 @@ extern void show_fips_status(void);
 extern void call_server(void);
 extern void init_event_base(void);
 typedef void event_callback_routine(evutil_socket_t, const short, void *);
-extern struct event *pluto_event_new(evutil_socket_t ft, short events,
-		event_callback_fn cb, void *arg, const struct timeval *t);
+extern struct event *timer_private_pluto_event_new(evutil_socket_t ft,
+	short events, event_callback_fn cb, void *arg,
+	const struct timeval *t);
 extern struct pluto_event *pluto_event_add(evutil_socket_t fd, short events,
 		                event_callback_fn cb, void *arg,
 				const struct timeval *delay, char *name);

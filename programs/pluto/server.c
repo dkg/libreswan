@@ -11,6 +11,7 @@
  * Copyright (C) 2012-2017 Paul Wouters <pwouters@redhat.com>
  * Copyright (C) 2013 Wolfgang Nothdurft <wolfgang@linogate.de>
  * Copyright (C) 2016 Andrew Cagney <cagney@gnu.org>
+ * Copyright (C) 2017 D. Hugh Redelmeier <hugh@mimosa.com>
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -83,7 +84,6 @@
 #include "whack.h"              /* for RC_LOG_SERIOUS */
 #include "pluto_crypt.h"        /* cryptographic helper functions */
 #include "udpfromto.h"
-
 #include <libreswan/pfkeyv2.h>
 #include <libreswan/pfkey.h>
 #include "kameipsec.h"
@@ -102,8 +102,6 @@
 /*
  *  Server main loop and socket initialization routines.
  */
-
-static const int on = TRUE;     /* by-reference parameter; constant, we hope */
 
 char *pluto_vendorid;
 
@@ -125,15 +123,7 @@ struct sockaddr_un ctl_addr = {
 #if defined(HAS_SUN_LEN)
 	.sun_len = sizeof(struct sockaddr_un),
 #endif
-	.sun_path  = DEFAULT_CTLBASE CTL_SUFFIX
-};
-
-struct sockaddr_un info_addr = {
-	.sun_family = AF_UNIX,
-#if defined(HAS_SUN_LEN)
-	.sun_len = sizeof(struct sockaddr_un),
-#endif
-	.sun_path  = DEFAULT_CTLBASE INFO_SUFFIX
+	.sun_path  = DEFAULT_CTL_SOCKET
 };
 
 /* Initialize the control socket.
@@ -153,9 +143,6 @@ err_t init_ctl_socket(void)
 		failed = "create";
 	} else if (fcntl(ctl_fd, F_SETFD, FD_CLOEXEC) == -1) {
 		failed = "fcntl FD+CLOEXEC";
-	} else if (setsockopt(ctl_fd, SOL_SOCKET, SO_REUSEADDR,
-			      (const void *)&on, sizeof(on)) < 0) {
-		failed = "setsockopt";
 	} else {
 		/* to keep control socket secure, use umask */
 #ifdef PLUTO_GROUP_CTL
@@ -165,17 +152,16 @@ err_t init_ctl_socket(void)
 #endif
 
 		if (bind(ctl_fd, (struct sockaddr *)&ctl_addr,
-			 offsetof(struct sockaddr_un,
-				  sun_path) + strlen(ctl_addr.sun_path)) < 0)
+			 offsetof(struct sockaddr_un, sun_path) +
+				strlen(ctl_addr.sun_path)) < 0)
 			failed = "bind";
 		umask(ou);
 	}
 
 #ifdef PLUTO_GROUP_CTL
 	{
-		struct group *g;
+		struct group *g = getgrnam("pluto");
 
-		g = getgrnam("pluto");
 		if (g != NULL) {
 			if (fchown(ctl_fd, -1, g->gr_gid) != 0) {
 				loglog(RC_LOG_SERIOUS,
@@ -214,6 +200,9 @@ enum seccomp_mode pluto_seccomp_mode = SECCOMP_DISABLED;
 unsigned int pluto_max_halfopen = DEFAULT_MAXIMUM_HALFOPEN_IKE_SA;
 unsigned int pluto_ddos_threshold = DEFAULT_IKE_SA_DDOS_THRESHOLD;
 deltatime_t pluto_shunt_lifetime = { PLUTO_SHUNT_LIFE_DURATION_DEFAULT };
+
+unsigned int pluto_sock_bufsize = IKE_BUF_AUTO; /* use system values */
+bool pluto_sock_errqueue = TRUE; /* Enable MSG_ERRQUEUE on IKE socket */
 
 struct iface_port  *interfaces = NULL;  /* public interfaces */
 
@@ -270,9 +259,8 @@ static void free_dead_ifaces(void)
 
 				*pp = p->next; /* advance *pp */
 
-				if (p->ev != NULL) {
-					event_del(p->ev);
-					p->ev = NULL;
+				if (p->pev != NULL) {
+					delete_pluto_event(&p->pev);
 				}
 
 				close(p->fd);
@@ -307,6 +295,8 @@ int create_socket(struct raw_iface *ifp, const char *v_name, int port)
 {
 	int fd = socket(addrtypeof(&ifp->addr), SOCK_DGRAM, IPPROTO_UDP);
 	int fcntl_flags;
+	static const int on = TRUE;     /* by-reference parameter; constant, we hope */
+	static const int so_prio = 6; /* rumored maximum priority, might be 7 on linux? */
 
 	if (fd < 0) {
 		LOG_ERRNO(errno, "socket() in process_raw_ifaces()");
@@ -322,25 +312,56 @@ int create_socket(struct raw_iface *ifp, const char *v_name, int port)
 	}
 
 	if (fcntl(fd, F_SETFD, FD_CLOEXEC) == -1) {
-		LOG_ERRNO(errno, "fcntl(,, FD_CLOEXEC) in process_raw_ifaces()");
+		LOG_ERRNO(errno, "fcntl(,, FD_CLOEXEC) in create_socket()");
 		close(fd);
 		return -1;
 	}
 
 	if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR,
 		       (const void *)&on, sizeof(on)) < 0) {
-		LOG_ERRNO(errno, "setsockopt SO_REUSEADDR in process_raw_ifaces()");
+		LOG_ERRNO(errno, "setsockopt SO_REUSEADDR in create_socket()");
 		close(fd);
 		return -1;
 	}
 
+	if (setsockopt(fd, SOL_SOCKET, SO_PRIORITY,
+			(const void *)&so_prio, sizeof(so_prio)) < 0) {
+                LOG_ERRNO(errno, "setsockopt(SO_PRIORITY) in find_raw_ifaces4()");
+		/* non-fatal */
+	}
+
+	if (pluto_sock_bufsize != IKE_BUF_AUTO) {
+#if defined(linux)
+		/*
+		 * Override system maximum
+		 * Requires CAP_NET_ADMIN
+		 */
+		int so_rcv = SO_RCVBUFFORCE;
+		int so_snd = SO_SNDBUFFORCE;
+#else
+		int so_rcv = SO_RCVBUF;
+		int so_snd = SO_SNDBUF;
+#endif
+		if (setsockopt(fd, SOL_SOCKET, so_rcv,
+			(const void *)&pluto_sock_bufsize, sizeof(pluto_sock_bufsize)) < 0) {
+				LOG_ERRNO(errno, "setsockopt(SO_RCVBUFFORCE) in find_raw_ifaces4()");
+		}
+		if (setsockopt(fd, SOL_SOCKET, so_snd,
+			(const void *)&pluto_sock_bufsize, sizeof(pluto_sock_bufsize)) < 0) {
+				LOG_ERRNO(errno, "setsockopt(SO_SNDBUFFORCE) in find_raw_ifaces4()");
+		}
+	}
+
+
+
 	/* To improve error reporting.  See ip(7). */
 #if defined(IP_RECVERR) && defined(MSG_ERRQUEUE)
-	if (setsockopt(fd, SOL_IP, IP_RECVERR,
-		       (const void *)&on, sizeof(on)) < 0) {
-		LOG_ERRNO(errno, "setsockopt IP_RECVERR in process_raw_ifaces()");
-		close(fd);
-		return -1;
+	if (pluto_sock_errqueue) {
+		if (setsockopt(fd, SOL_IP, IP_RECVERR, (const void *)&on, sizeof(on)) < 0) {
+			LOG_ERRNO(errno, "setsockopt IP_RECVERR in create_socket()");
+			close(fd);
+			return -1;
+		}
 	}
 #endif
 
@@ -449,6 +470,7 @@ static struct pluto_event *free_event_entry(struct pluto_event **evp)
 			const char *en = enum_name(&timer_event_names, e->ev_type);
 			DBG_log("%s: release %s-pe@%p", __func__, en, e));
 
+	pfreeany(e->ev_name);
 	pfree(e);
 	*evp = NULL;
 	return next;
@@ -460,10 +482,10 @@ static void unlink_pluto_event_list(struct pluto_event **evp) {
 	struct pluto_event *e = *evp;
 
 	for (pp = &pluto_events_head; (p = *pp) != NULL; pp = &p->next) {
-		if (p != e)
-			continue;
-		*pp = free_event_entry(evp); /* unlink this entry from the list */
-		return;
+		if (p == e) {
+			*pp = free_event_entry(evp); /* unlink this entry from the list */
+			return;
+		}
 	}
 }
 
@@ -490,24 +512,13 @@ void delete_pluto_event(struct pluto_event **evp)
 	unlink_pluto_event_list(evp);
 }
 
-struct pluto_event *pluto_event_add(evutil_socket_t fd, short events,
-		event_callback_fn cb, void *arg, const struct timeval *delay,
-		char *name) {
-	struct pluto_event *e = alloc_thing(struct pluto_event, name);
-	e->ev_type = EVENT_NULL;
-	e->ev_name = name;
-	e->ev = pluto_event_new(fd, events, cb, arg, delay);
-	link_pluto_event_list(e);
-	if (delay != NULL)
-	{
-		e->ev_time = monotimesum(mononow(), deltatime(delay->tv_sec));
-	}
-	return e; /* compaitable with pluto_event_new for the time being */
-}
-
-/* a wrapper for libevent's event_new + event_add; any error is fatal */
-struct event *pluto_event_new(evutil_socket_t fd, short events,
-		event_callback_fn cb, void *arg, const struct timeval *t)
+/*
+ * a wrapper for libevent's event_new + event_add; any error is fatal
+ * If you're looking for how to set up a timer look at pluto_event_add
+ */
+static struct event *pluto_event_wraper(evutil_socket_t fd, short events,
+				     event_callback_fn cb, void *arg,
+				     const struct timeval *t)
 {
 	struct event *ev = event_new(pluto_eb, fd, events, cb, arg);
 	int r;
@@ -516,6 +527,34 @@ struct event *pluto_event_new(evutil_socket_t fd, short events,
 	r = event_add(ev, t);
 	passert(r >= 0);
 	return ev;
+}
+
+/*
+ * XXX: custom version of event new used only by timer.c.  If you're
+ * looking for how to set up a timer, then don't look here and don't
+ * look at timer.c.  Why?
+ */
+struct event *timer_private_pluto_event_new(evutil_socket_t fd, short events,
+					    event_callback_fn cb, void *arg,
+					    const struct timeval *t)
+{
+	return pluto_event_wraper(fd, events, cb, arg, t);
+}
+
+
+struct pluto_event *pluto_event_add(evutil_socket_t fd, short events,
+		event_callback_fn cb, void *arg, const struct timeval *delay,
+		char *name) {
+	struct pluto_event *e = alloc_thing(struct pluto_event, name);
+	e->ev_type = EVENT_NULL;
+	e->ev_name = clone_str(name, "event name");
+	e->ev = pluto_event_wraper(fd, events, cb, arg, delay);
+	link_pluto_event_list(e);
+	if (delay != NULL)
+	{
+		e->ev_time = monotimesum(mononow(), deltatime(delay->tv_sec));
+	}
+	return e; /* compaitable with pluto_event_new for the time being */
 }
 
 /*
@@ -585,19 +624,23 @@ void find_ifaces(void)
 
 	if (listening) {
 		for (ifp = interfaces; ifp != NULL; ifp = ifp->next) {
-			if (ifp->ev != NULL) {
-				event_del(ifp->ev);
-				ifp->ev = NULL;
+			if (ifp->pev != NULL) {
+				delete_pluto_event(&ifp->pev);
 				DBG_log("refresh. setup callback for interface %s:%u %d",
 						ifp->ip_dev->id_rname,ifp->port,
 						ifp->fd);
 			}
-			ifp->ev = pluto_event_new(ifp->fd,
+			char prefix[] ="INTERFACE_FD-";
+			char ifp_str[sizeof(prefix) +
+				strlen(ifp->ip_dev->id_rname) +
+				5 + 1 + 1 /* : + NUL */];
+			snprintf(ifp_str, sizeof(ifp_str), "%s:%u",
+					ifp->ip_dev->id_rname, ifp->port);
+			ifp->pev = pluto_event_add(ifp->fd,
 					EV_READ | EV_PERSIST, comm_handle_cb,
-					ifp, NULL);
-			DBG_log("setup callback for interface %s:%u fd %d",
-					ifp->ip_dev->id_rname, ifp->port,
-					ifp->fd);
+					ifp, NULL, ifp_str);
+			DBG_log("setup callback for interface %s fd %d",
+					ifp_str, ifp->fd);
 		}
 	}
 }
@@ -618,8 +661,11 @@ void show_ifaces_status(void)
 
 void show_debug_status(void)
 {
-	whack_log(RC_COMMENT, "debug %s",
-		  bitnamesof(debug_bit_names, cur_debugging));
+	LSWLOG_WHACK(RC_COMMENT, buf) {
+		lswlogs(buf, "debug ");
+		lswlog_enum_lset_short(buf, &debug_and_impair_names,
+				       cur_debugging);
+	}
 }
 
 void show_fips_status(void)
@@ -638,27 +684,6 @@ void show_fips_status(void)
 		DBGP(IMPAIR_FORCE_FIPS) ? "enabled [forced]" : "enabled");
 }
 
-static volatile sig_atomic_t sighupflag = FALSE;
-
-static void huphandler(int sig UNUSED)
-{
-	sighupflag = TRUE;
-}
-
-static volatile sig_atomic_t sigtermflag = FALSE;
-
-static void termhandler(int sig UNUSED)
-{
-	sigtermflag = TRUE;
-}
-
-static volatile sig_atomic_t sigsysflag = FALSE;
-
-static void syshandler(int sig UNUSED)
-{
-	sigsysflag = TRUE;
-}
-
 static void huphandler_cb(int unused UNUSED, const short event UNUSED, void *arg UNUSED)
 {
 	/* logging is probably not signal handling / threa safe */
@@ -669,6 +694,7 @@ static void termhandler_cb(int unused UNUSED, const short event UNUSED, void *ar
 {
 	exit_pluto(PLUTO_EXIT_OK);
 }
+
 #ifdef HAVE_SECCOMP
 static void syshandler_cb(int unused UNUSED, const short event UNUSED, void *arg UNUSED)
 {
@@ -680,43 +706,77 @@ static void syshandler_cb(int unused UNUSED, const short event UNUSED, void *arg
 }
 #endif
 
-static volatile sig_atomic_t sigchildflag = FALSE;
-
-static void childhandler(int sig UNUSED)
+static void addconn_exited(int status, void *context UNUSED)
 {
-	sigchildflag = TRUE;
+       DBG(DBG_CONTROLMORE,
+           DBG_log("reaped addconn helper child (status %d)", status));
+       addconn_child_pid = 0;
 }
 
-/*
- * Perform waitpid() for all children.
- * We used to have more different kinds of children, but these
- * days we only have one - add_conn
- */
-static void reapchildren(void)
+static void log_status(struct lswlog *buf, int status)
 {
-	pid_t child;
-	int status;
-
-	errno = 0;
-
-	child = waitpid(addconn_child_pid, &status, WNOHANG);
-	if (child == addconn_child_pid) {
-		DBG(DBG_CONTROLMORE,
-		    DBG_log("reaped addconn helper child"));
-		addconn_child_pid = 0;
-	} else if (child == -1) {
-		libreswan_log("reapchild failed with errno=%d %s",
-			      errno, strerror(errno));
+	lswlogf(buf, "status %x ", status);
+	if (WIFEXITED(status)) {
+		lswlogf(buf, "exit status %u",
+			WEXITSTATUS(status));
+	} else if (WIFSIGNALED(status)) {
+		lswlogf(buf, "term signal %s (%d)",
+			strsignal(WTERMSIG(status)),
+			WTERMSIG(status));
+	} else if (WIFSTOPPED(status)) {
+		/* should not happen */
+		lswlogf(buf, "stop signal %s (%d) but WUNTRACED not specified",
+			strsignal(WSTOPSIG(status)),
+			WSTOPSIG(status));
+	} else if (WIFCONTINUED(status)) {
+		lswlogf(buf, "continued");
 	} else {
-		libreswan_log("child pid=%d (status=%d) is not my child!",
-				child, status);
-
+		lswlogf(buf, "not recognized!");
 	}
+#ifdef WCOREDUMP
+	if (WCOREDUMP(status)) {
+		lswlogs(buf, " (core dumped)");
+	}
+#endif
 }
 
 static void childhandler_cb(int unused UNUSED, const short event UNUSED, void *arg UNUSED)
 {
-    reapchildren();
+	while (true) {
+		int status;
+		errno = 0;
+		pid_t child = waitpid(-1, &status, WNOHANG);
+		switch (child) {
+		case -1: /* error? */
+			if (errno == ECHILD) {
+				DBG(DBG_CONTROLMORE,
+				    DBG_log("waitpid returned no more children"));
+			} else {
+				LOG_ERRNO(errno, "waitpid unexpectedly failed");
+			}
+			return;
+		case 0: /* nothing to do */
+			DBG(DBG_CONTROLMORE,
+			    DBG_log("waitpid returned nothing left to do (but children still running)"));
+			return;
+		default:
+			LSWDBGP(DBG_CONTROLMORE, buf) {
+				lswlogf(buf, "waitpid returned pid %d - ",
+					child);
+				log_status(buf, status);
+			}
+			if (addconn_child_pid != 0 && addconn_child_pid == child) {
+				addconn_exited(status, NULL);
+			} else {
+				LSWLOG(buf) {
+					lswlogf(buf, "waitpid return unknown child pid %d - ",
+						child);
+					log_status(buf, status);
+				}
+			}
+			break;
+		}
+	}
 }
 
 void init_event_base(void) {
@@ -727,17 +787,20 @@ void init_event_base(void) {
 	 * According to section 'setup Library setup', libevent needs
 	 * to be set up in pthreads mode before doing anything else.
 	 */
-	passert(evthread_use_pthreads() >= 0);
+	int r = evthread_use_pthreads();
+	passert(r >= 0);
 	/* now do anything */
 	pluto_eb = event_base_new();
 	passert(pluto_eb != NULL);
-	passert(evthread_make_base_notifiable(pluto_eb) >= 0);
+	int s = evthread_make_base_notifiable(pluto_eb);
+	passert(s >= 0);
 }
 
-static void main_loop(void)
+/* call_server listens for incoming ISAKMP packets and Whack messages,
+ * and handles timer events.
+ */
+void call_server(void)
 {
-	int r;
-
 	/*
 	 * setup basic events, CTL and SIGNALs
 	 */
@@ -747,7 +810,7 @@ static void main_loop(void)
 	pluto_event_add(ctl_fd, EV_READ | EV_PERSIST, whack_handle_cb, NULL,
 			NULL, "PLUTO_CTL_FD");
 
-	pluto_event_add(SIGCHLD, EV_SIGNAL, childhandler_cb, NULL, NULL,
+	pluto_event_add(SIGCHLD, EV_SIGNAL | EV_PERSIST, childhandler_cb, NULL, NULL,
 			"PLUTO_SIGCHLD");
 
 	pluto_event_add(SIGTERM, EV_SIGNAL, termhandler_cb, NULL, NULL,
@@ -760,41 +823,6 @@ static void main_loop(void)
 	pluto_event_add(SIGSYS, EV_SIGNAL, syshandler_cb, NULL, NULL,
 			"PLUTO_SIGSYS");
 #endif
-
-	r = event_base_loop(pluto_eb, 0);
-	passert(r == 0);
-}
-
-/* call_server listens for incoming ISAKMP packets and Whack messages,
- * and handles timer events.
- */
-void call_server(void)
-{
-	/* catch SIGHUP, SIGTERM, SIGCHLD and SIGSYS */
-	{
-		int r;
-		struct sigaction act;
-
-		act.sa_handler = &huphandler;
-		sigemptyset(&act.sa_mask);
-		act.sa_flags = 0; /* no SA_ONESHOT, no SA_RESTART, no nothing */
-		r = sigaction(SIGHUP, &act, NULL);
-		passert(r == 0);
-
-		act.sa_handler = &termhandler;
-		r = sigaction(SIGTERM, &act, NULL);
-		passert(r == 0);
-
-		act.sa_handler = &syshandler;
-		r = sigaction(SIGSYS, &act, NULL);
-		passert(r == 0);
-
-		act.sa_handler = &childhandler;
-		act.sa_flags   = SA_RESTART;
-		r = sigaction(SIGCHLD, &act, NULL);
-		passert(r == 0);
-
-	}
 
 	/* do_whacklisten() is now done by the addconn fork */
 
@@ -847,7 +875,7 @@ void call_server(void)
 				       addconn_path);
 
 		char *newargv[] = { DISCARD_CONST(char *, "addconn"),
-				    DISCARD_CONST(char *, "--ctlbase"),
+				    DISCARD_CONST(char *, "--ctlsocket"),
 				    DISCARD_CONST(char *, ctl_addr.sun_path),
 				    DISCARD_CONST(char *, "--autoall"), NULL };
 		char *newenv[] = { NULL };
@@ -894,7 +922,9 @@ void call_server(void)
 #else
 	libreswan_log("seccomp security not supported");
 #endif
-	main_loop();
+
+	int r = event_base_loop(pluto_eb, 0);
+	passert(r == 0);
 }
 
 /* Process any message on the MSG_ERRQUEUE
@@ -943,9 +973,10 @@ void call_server(void)
  */
 
 #if defined(IP_RECVERR) && defined(MSG_ERRQUEUE)
-bool check_msg_errqueue(const struct iface_port *ifp, short interest)
+bool check_msg_errqueue(const struct iface_port *ifp, short interest, const char *before)
 {
 	struct pollfd pfd;
+	int again_count = 0;
 
 	pfd.fd = ifp->fd;
 	pfd.events = interest | POLLPRI | POLLOUT;
@@ -991,11 +1022,22 @@ bool check_msg_errqueue(const struct iface_port *ifp, short interest)
 
 		packet_len = recvmsg(ifp->fd, &emh, MSG_ERRQUEUE);
 
+		if (emh.msg_flags & MSG_TRUNC)
+			libreswan_log("recvmsg: received truncated IKE packet (MSG_TRUNC)");
+
 		if (packet_len == -1) {
-			LOG_ERRNO(errno,
-				  "recvmsg(,, MSG_ERRQUEUE) on %s failed in comm_handle",
-				  ifp->ip_dev->id_rname);
-			break;
+			if (errno == EAGAIN) {
+				again_count++;
+				LOG_ERRNO(errno,
+					  "recvmsg(,, MSG_ERRQUEUE) on %s failed (noticed before %s) (attempt %d)",
+					  ifp->ip_dev->id_rname, before, again_count);
+				continue;
+			} else {
+				LOG_ERRNO(errno,
+					  "recvmsg(,, MSG_ERRQUEUE) on %s failed (noticed before %s)",
+					  ifp->ip_dev->id_rname, before);
+				break;
+			}
 		} else if (packet_len == (ssize_t)sizeof(buffer)) {
 			libreswan_log(
 				"MSG_ERRQUEUE message longer than %lu bytes; truncated",
@@ -1004,10 +1046,14 @@ bool check_msg_errqueue(const struct iface_port *ifp, short interest)
 			sender = find_likely_sender((size_t) packet_len, buffer);
 		}
 
-		DBG_cond_dump(DBG_ALL, "rejected packet:\n", buffer,
+		if (packet_len > 0) {
+			DBG_cond_dump(DBG_ALL, "rejected packet:\n", buffer,
 			      packet_len);
+		}
+
 		DBG_cond_dump(DBG_ALL, "control:\n", emh.msg_control,
 			      emh.msg_controllen);
+
 		/* ??? Andi Kleen <ak@suse.de> and misc documentation
 		 * suggests that name will have the original destination
 		 * of the packet.  We seem to see msg_namelen == 0.
@@ -1133,36 +1179,64 @@ bool check_msg_errqueue(const struct iface_port *ifp, short interest)
 					 * don't log NAT-T keepalive related errors unless NATT debug is
 					 * enabled
 					 */
-				} else if (DBGP(DBG_OPPO) ||
-					   (sender != NULL && sender->st_connection != NULL &&
-					    LDISJOINT(sender->st_connection->policy, POLICY_OPPORTUNISTIC)))
-				{
+				} else if (sender != NULL && sender->st_connection != NULL &&
+					   LDISJOINT(sender->st_connection->policy, POLICY_OPPORTUNISTIC)) {
 					/*
-					 * We are selective about printing this
-					 * diagnostic since it pours out when
-					 * we are doing unrequited authnull OE.
-					 * That's the point of the condition
-					 * above.
-					 * ??? the condition treats all authnull as OE.
+					 * The sender is known and
+					 * this isn't an opportunistic
+					 * connection, so log.
+					 *
+					 * XXX: originally this path
+					 * was taken unconditionally
+					 * but with opportunistic that
+					 * got too verbose.  Is there
+					 * a global opportunistic
+					 * disabled test so that
+					 * behaviour can be restored?
+					 *
+					 * HACK: So that the logging
+					 * system doesn't accidently
+					 * include a prefix for the
+					 * wrong state et.al., switch
+					 * out everything but SENDER.
+					 * Better would be to make the
+					 * state/connection an
+					 * explicit parameter to the
+					 * logging system?
 					 */
-					/* ??? DBGP is controlling non-DBG logging! */
-					struct state *old_state = cur_state;
-
-					cur_state = sender;
-
-					/* note dirty trick to suppress ~ at start of format
-					 * if we know what state to blame.
-					 * Don't bother to report ee_{pad,info,data}.
+#define LOG_SENDER(LOG, SENDER)						\
+					struct state *old_state = cur_state; \
+					struct connection *old_connection = cur_connection; \
+					const ip_address *old_from = cur_from; \
+					cur_state = SENDER;		\
+					cur_connection = NULL;		\
+					cur_from = NULL;		\
+					LOG("ERROR: asynchronous network error report on %s (sport=%d)%s, complainant %s: %s [errno %lu, origin %s]", \
+					    ifp->ip_dev->id_rname, ifp->port, \
+					    fromstr,			\
+					    offstr,			\
+					    strerror(ee->ee_errno),	\
+					    (unsigned long) ee->ee_errno, orname); \
+					cur_state = old_state;		\
+					cur_connection = old_connection; \
+					cur_from = old_from;
+					/* */
+					LOG_SENDER(libreswan_log, sender);
+				} else if (DBGP(DBG_OPPO)) {
+					/*
+					 * Since this output is forced
+					 * using DBGP, report the
+					 * error using debug-log.
+					 *
+					 * Since DBG_log() doesn't add
+					 * a prefix for the current
+					 * state et.al., the above
+					 * switch hack isn't needed.
+					 * However, do it anyway, so
+					 * that there is no confusion.
 					 */
-					libreswan_log((sender != NULL) + "~"
-						"ERROR: asynchronous network error report on %s (sport=%d)%s, complainant %s: %s [errno %lu, origin %s]",
-						ifp->ip_dev->id_rname, ifp->port,
-						fromstr,
-						offstr,
-						strerror(ee->ee_errno),
-						(unsigned long) ee->ee_errno, orname
-						);
-					cur_state = old_state;
+					LOG_SENDER(DBG_log, sender);
+#undef LOG_SENDER
 				}
 			} else if (cm->cmsg_level == SOL_IP &&
 				   cm->cmsg_type == IP_PKTINFO) {
@@ -1190,10 +1264,10 @@ bool check_msg_errqueue(const struct iface_port *ifp, short interest)
  *
  * The first two call send_or_resend_ike_msg().
  * That handles an IKE message.
- * It calls send_frags() if the message needs to be fragmented.
+ * It calls send_v1_frags() if the message needs to be fragmented.
  * Otherwise it calls send_packet() to send it in one gulp.
  *
- * send_frags() breaks an IKE message into fragments and sends
+ * send_v1_frags() breaks an IKE message into fragments and sends
  * them by send_packet().
  *
  * send_keepalive() calls send_packet() directly: uses a special
@@ -1222,6 +1296,12 @@ static bool send_packet(struct state *st, const char *where,
 		return FALSE;
 	}
 
+	/* bandaid */
+	if (aptr == NULL) {
+		libreswan_log("Cannot send packet - aptr is NULL");
+		return FALSE;
+	}
+
 	if (isanyaddr(&st->st_remoteaddr)) {
 		/* not asserting, who knows what nonsense a user can generate */
 		libreswan_log("Will not send packet to bogus address 0.0.0.0");
@@ -1237,7 +1317,7 @@ static bool send_packet(struct state *st, const char *where,
 	ssize_t wlen;
 
 	if (len > MAX_OUTPUT_UDP_SIZE) {
-		DBG_log("send_ike_msg(): really too big %zu bytes", len);
+		loglog(RC_LOG_SERIOUS, "send_ike_msg(): really too big %zu bytes", len);
 		return FALSE;
 	}
 
@@ -1265,7 +1345,7 @@ static bool send_packet(struct state *st, const char *where,
 			where,
 			st->st_interface->ip_dev->id_rname,
 			st->st_interface->port,
-			ipstr(&st->st_remoteaddr, &b),
+			log_ip ? ipstr(&st->st_remoteaddr, &b) : "<ip>",
 			st->st_remoteport,
 			st->st_serialno);
 	});
@@ -1274,7 +1354,7 @@ static bool send_packet(struct state *st, const char *where,
 	setportof(htons(st->st_remoteport), &st->st_remoteaddr);
 
 #if defined(IP_RECVERR) && defined(MSG_ERRQUEUE)
-	(void) check_msg_errqueue(st->st_interface, POLLOUT);
+	(void) check_msg_errqueue(st->st_interface, POLLOUT, "sending a packet");
 #endif  /* defined(IP_RECVERR) && defined(MSG_ERRQUEUE) */
 
 	wlen = sendto(st->st_interface->fd,
@@ -1284,11 +1364,11 @@ static bool send_packet(struct state *st, const char *where,
 		      sockaddrlenof(&st->st_remoteaddr));
 
 	if (wlen != (ssize_t)len) {
-		if (just_a_keepalive) {
+		if (!just_a_keepalive) {
 			ipstr_buf b;
 			LOG_ERRNO(errno, "sendto on %s to %s:%u failed in %s",
 				  st->st_interface->ip_dev->id_rname,
-				  ipstr(&st->st_remoteaddr, &b),
+				  log_ip ? ipstr(&st->st_remoteaddr, &b) : "<ip>",
 				  st->st_remoteport,
 				  where);
 		}
@@ -1317,7 +1397,7 @@ static bool send_packet(struct state *st, const char *where,
 			      sockaddrof(&st->st_remoteaddr),
 			      sockaddrlenof(&st->st_remoteaddr));
 		if (wlen != (ssize_t)len) {
-			if (just_a_keepalive) {
+			if (!just_a_keepalive) {
 				LOG_ERRNO(errno,
 					  "sendto on %s to %s:%u failed in %s",
 					  st->st_interface->ip_dev->id_rname,
@@ -1332,6 +1412,8 @@ static bool send_packet(struct state *st, const char *where,
 }
 
 /*
+ * (IKE v1) send fragments of packet.
+ *
  * non-IETF magic voodoo we need to consider for interop:
  * - www.cisco.com/en/US/docs/ios/sec_secure_connectivity/configuration/guide/sec_fragment_ike_pack.html
  * - www.cisco.com/en/US/docs/ios-xml/ios/sec_conn_ikevpn/configuration/15-mt/sec-fragment-ike-pack.pdf
@@ -1340,7 +1422,7 @@ static bool send_packet(struct state *st, const char *where,
  * - stock racoon source (frak length 552)
  */
 
-static bool send_frags(struct state *st, const char *where)
+static bool send_v1_frags(struct state *st, const char *where)
 {
 	unsigned int fragnum = 0;
 
@@ -1459,9 +1541,7 @@ bool should_fragment_ike_msg(struct state *st, size_t len, bool resending)
 
 static bool send_ikev2_frags(struct state *st, const char *where)
 {
-	struct ikev2_frag *frag;
-
-	for (frag = st->st_tfrags; frag != NULL; frag = frag->next)
+	for (struct v2_ike_tfrag *frag = st->st_v2_tfrags; frag != NULL; frag = frag->next)
 		if (!send_packet(st, where, FALSE,
 				 frag->cipher.ptr, frag->cipher.len, NULL, 0))
 			return FALSE;
@@ -1477,7 +1557,7 @@ static bool send_or_resend_ike_msg(struct state *st, const char *where,
 		return FALSE;
 	}
 
-	if (st->st_tfrags != NULL) {
+	if (st->st_v2_tfrags != NULL) {
 		/* if a V2 packet needs fragmenting it would have already happened */
 		passert(st->st_ikev2);
 		passert(st->st_tpacket.ptr == NULL);
@@ -1501,7 +1581,7 @@ static bool send_or_resend_ike_msg(struct state *st, const char *where,
 		    st->st_state != STATE_MAIN_I1 &&
 		    should_fragment_ike_msg(st, len + natt_bonus, resending))
 		{
-			return send_frags(st, where);
+			return send_v1_frags(st, where);
 		} else {
 			return send_packet(st, where, FALSE, st->st_tpacket.ptr,
 					   st->st_tpacket.len, NULL, 0);
@@ -1532,24 +1612,32 @@ bool record_and_send_ike_msg(struct state *st, pb_stream *pbs, const char *what)
 bool send_ike_msg_without_recording(struct state *st, pb_stream *pbs, const char *where)
 {
 	chunk_t saved_tpacket = st->st_tpacket;
-	struct ikev2_frag *saved_tfrags  = st->st_tfrags;
+	struct v2_ike_tfrag *saved_tfrags  = st->st_v2_tfrags;
 	bool r;
 
-	st->st_tfrags = NULL; /* assume notification and no fragments */
+	st->st_v2_tfrags = NULL; /* assume notification and no fragments */
 
 	setchunk(st->st_tpacket, pbs->start, pbs_offset(pbs));
 	r = send_ike_msg(st, where);
 
 	/* restore the previous transmitted packet to st */
 	st->st_tpacket = saved_tpacket;
-	st->st_tfrags = saved_tfrags;
+	st->st_v2_tfrags = saved_tfrags;
 
 	return r;
 }
 
 bool resend_ike_v1_msg(struct state *st, const char *where)
 {
-	return send_or_resend_ike_msg(st, where, TRUE);
+	bool ret = send_or_resend_ike_msg(st, where, TRUE);
+
+	if (st->st_state == STATE_XAUTH_R0 &&
+	    !LIN(POLICY_AGGRESSIVE, st->st_connection->policy)) {
+		/* Only for Main mode + XAUTH */
+		event_schedule_ms(EVENT_v1_SEND_XAUTH, EVENT_v1_SEND_XAUTH_DELAY, st);
+	}
+
+	return ret;
 }
 
 /*

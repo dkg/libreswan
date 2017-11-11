@@ -28,23 +28,7 @@
 /* moved common code to library file */
 #include "libreswan/passert.h"
 
-#define loglog	libreswan_loglog
-#define plog	libreswan_log
-extern int libreswan_log(const char *message, ...) PRINTF_LIKE(1);
-
-/* Log to both main log and whack log
- * Much like log, actually, except for specifying mess_no.
- */
-extern void libreswan_loglog(int mess_no, const char *message,
-			     ...) PRINTF_LIKE(2);
-
 #include "constants.h"
-
-extern lset_t base_debugging;	/* bits selecting what to report */
-extern lset_t cur_debugging;	/* current debugging level */
-extern void set_debugging(lset_t deb);
-
-#define DBGP(cond)	(cur_debugging & (cond))
 
 /*
  * NOTE: DBG's action can be a { } block, but that block must not
@@ -53,11 +37,20 @@ extern void set_debugging(lset_t deb);
  * as macro argument separators.  This happens accidentally if
  * multiple variables are declared in one declaration.
  */
+
+extern lset_t cur_debugging;	/* current debugging level */
+
+#define DBGP(cond)	(cur_debugging & (cond))
+
+#define DEBUG_PREFIX "| "
+
 #define DBG(cond, action)	{ if (DBGP(cond)) { action; } }
 
-#define DBG_log libreswan_DBG_log
+/* signature needs to match printf() */
+int lswlog_dbg(const char *message, ...) PRINTF_LIKE(1);
+
+#define DBG_log lswlog_dbg
 #define DBG_dump libreswan_DBG_dump
-extern int libreswan_DBG_log(const char *message, ...) PRINTF_LIKE(1);
 extern void libreswan_DBG_dump(const char *label, const void *p, size_t len);
 
 #define DBG_dump_chunk(label, ch) DBG_dump(label, (ch).ptr, (ch).len)
@@ -81,7 +74,6 @@ extern void libreswan_DBG_dump(const char *label, const void *p, size_t len);
 extern err_t builddiag(const char *fmt, ...) PRINTF_LIKE(1);	/* NOT RE-ENTRANT */
 
 extern bool log_to_stderr;          /* should log go to stderr? */
-extern bool log_to_syslog;          /* should log go to syslog? */
 
 /*
  * For stand-alone tools.
@@ -90,7 +82,6 @@ extern bool log_to_syslog;          /* should log go to syslog? */
  */
 extern char *progname;
 extern void tool_init_log(char *progname);
-extern void tool_close_log(void);
 
 /* Codes for status messages returned to whack.
  * These are 3 digit decimal numerals.  The structure
@@ -153,6 +144,27 @@ enum rc_type {
 };
 
 /*
+ * Everything goes through here.
+ *
+ * Like vprintf() this modifies AP; to preserve AP use C99's
+ * va_copy().
+ */
+extern void libreswan_vloglog(enum rc_type rc, const char *fmt, va_list ap);
+
+/*
+ * Log to both main log and whack log at level RC.
+ */
+#define loglog	libreswan_loglog
+extern void libreswan_loglog(enum rc_type, const char *fmt, ...) PRINTF_LIKE(2);
+
+/*
+ * Log to both main log and whack log at level RC_LOG.
+ */
+#define plog	libreswan_log
+/* signature needs to match printf() */
+extern int libreswan_log(const char *fmt, ...) PRINTF_LIKE(1);
+
+/*
  * Wrap <message> in a prefix and suffix where the suffix contains
  * errno and message.  Since __VA_ARGS__ may alter ERRNO, it needs to
  * be saved.
@@ -160,7 +172,7 @@ enum rc_type {
 
 void lswlog_log_errno(int e, const char *prefix,
 		      const char *message, ...) PRINTF_LIKE(3);
-void lswlog_exit(int rc) NEVER_RETURNS;
+void lswlog_exit(enum rc_type rc) NEVER_RETURNS;
 
 #define LOG_ERRNO(ERRNO, ...)						\
 	{								\
@@ -183,65 +195,265 @@ void lswlog_exit(int rc) NEVER_RETURNS;
 extern void sanitize_string(char *buf, size_t size);
 
 /*
- * A generic buffer for accumulating log output.
+ * A generic buffer for accumulating unbounded output.
+ */
+
+struct lswlog;
+
+/*
+ * Standard routines for appending output to the log buffer.
+ *
+ * If there is insufficient space, the output is truncated and "..."
+ * is appended.
+ *
+ * Similar to C99 snprintf() et.al., always return the untruncated
+ * message length (the value can never be negative).
+ *
+ * XXX: is returning the length useful?
+ */
+
+size_t lswlogvf(struct lswlog *log, const char *format, va_list ap);
+size_t lswlogf(struct lswlog *log, const char *format, ...) PRINTF_LIKE(2);
+size_t lswlogs(struct lswlog *log, const char *string);
+size_t lswlogl(struct lswlog *log, struct lswlog *buf);
+
+/* _(SECERR: N (0xX): <error-string>) */
+size_t lswlog_pr_error(struct lswlog *log);
+/* _(in FUNC() at FILE:LINE) */
+size_t lswlog_source_line(struct lswlog *log, const char *func,
+			  const char *file, unsigned long line);
+/* <string without binary characters> */
+size_t lswlog_sanitized(struct lswlog *log, const char *string);
+/* _Errno E: <strerror(E)> */
+size_t lswlog_errno(struct lswlog *log, int e);
+/* <hex-byte>:<hex-byte>... */
+size_t lswlog_bytes(struct lswlog *log, const uint8_t *bytes,
+		    size_t sizeof_bytes);
+
+/*
+ * The logging output streams used by library code.
+ *
+ * So far three^D^D^D four have been identified; and lets not forget
+ * STDOUT and STDERR which are also written to directly.
+ *
+ * These functions can assume that the buffer already contains
+ * relevant prefixes and just needs to be sent out.
+ *
+ * For logging stream, the output can may also be directed to whack
+ * stream.  When this happens, RC is prefixed to the already formatted
+ * message.
+ */
+
+void lswlog_to_debug_stream(struct lswlog *buf);
+void lswlog_to_error_stream(struct lswlog *buf);
+void lswlog_to_logger_stream(struct lswlog *buf, enum rc_type rc);
+void lswlog_to_whack_stream(struct lswlog *buf);
+
+/*
+ * Code wrappers that cover up the details of allocating,
+ * initializing, de-allocating (and possibly logging) a 'struct
+ * lswlog' buffer.
+ *
+ * BUF (a C variable name) is declared locally as a pointer to the
+ * 'struct lswlog' buffer.
+ *
+ * Implementation notes:
+ *
+ * This implementation puts the 'struct lswlog' on the stack.  Could
+ * just as easily use the heap.  BUF is a pointer so that this
+ * implementation detail is hidden.
+ *
+ * This implementation, unlike DBG(), does not have a code block
+ * parameter.  Instead it uses for-loops to set things up for a code
+ * block.  This avoids problems with "," within macro parameters
+ * confusing the parser.  It also permits a simple consistent
+ * indentation style.
+ *
+ * Apparently chaining void function calls using a comma is valid C?
+ */
+
+#define LSWBUF_ARRAY_(ARRAY, SIZEOF_ARRAY, BUF)				\
+	for (struct lswlog lswlog = { .array = ARRAY, .len = 0, .bound = SIZEOF_ARRAY - 2, .roof = SIZEOF_ARRAY - 1, .dots = "...", }; \
+	     lswlog_p; lswlog_p = false)				\
+		for (struct lswlog *BUF = &lswlog;			\
+		     lswlog_p; lswlog_p = false)			\
+			for (BUF->array[BUF->len] = BUF->array[BUF->bound] = '\0', \
+				     BUF->array[BUF->roof] = LSWBUF_CANARY; \
+			     lswlog_p; lswlog_p = false)
+
+#define LSWBUF_(BUF)							\
+	for (char lswbuf[LOG_WIDTH]; lswlog_p; lswlog_p = false)	\
+		LSWBUF_ARRAY_(lswbuf, sizeof(lswbuf), BUF)
+
+/*
+ * Wrap an existing array so lswlog*() routines can be called.
+ *
+ * For instance:
+ */
+
+#if 0
+void lswbuf_array(char *b, size_t sizeof_b)
+{
+	LSWBUF_ARRAY(b, sizeof_b, buf) {
+		lswlogf(buf, "written to the array");
+	}
+}
+#endif
+
+#define LSWBUF_ARRAY(ARRAY, SIZEOF_ARRAY, BUF)				\
+	for (bool lswlog_p = true; lswlog_p; lswlog_p = false)		\
+		LSWBUF_ARRAY_(ARRAY, SIZEOF_ARRAY, BUF)
+
+/*
+ * Scratch buffer for accumulating extra output.
+ *
+ * XXX: case should be expanded to illustrate how to stuff a truncated
+ * version of the output into the LOG buffer.
+ *
+ * For instance:
+ */
+
+#if 0
+void lswbuf(struct lswlog *log)
+{
+	LSWBUF(buf) {
+		lswlogf(buf, "written to buf");
+		lswlogl(log, buf); /* add to calling array */
+	}
+}
+#endif
+
+#define LSWBUF(BUF)							\
+	for (bool lswlog_p = true; lswlog_p; lswlog_p = false)		\
+		LSWBUF_(BUF)
+
+/*
+ * Write output to a FILE stream as a single block.
+ *
+ * For instance:
+ */
+
+#if 0
+void lswlog_file(FILE f)
+{
+	LSWLOG_FILE(f, buf) {
+		lswlogf(buf, "written to file");
+	}
+}
+#endif
+
+#define LSWLOG_FILE(FILE, BUF)						\
+	for (bool lswlog_p = true; lswlog_p; lswlog_p = false)		\
+		LSWBUF_(BUF)						\
+			for (; lswlog_p;				\
+			     fwrite(BUF->array, BUF->len, 1, FILE),	\
+				     lswlog_p = false)
+
+
+/*
+ * Send output to WHACK (if attached).
+ *
+ * XXX: See programs/pluto/log.h for interface; should only be used in
+ * pluto.  This code assumes that it is being called from the main
+ * thread.
+ */
+
+#define LSWLOG_WHACK(RC, BUF)						\
+	for (bool lswlog_p = whack_log_p(); lswlog_p; lswlog_p = false) \
+		LSWBUF_(BUF)						\
+			for (whack_log_pre(RC, BUF); lswlog_p;		\
+			     lswlog_to_whack_stream(BUF),		\
+				     lswlog_p = false)
+
+/*
+ * Send debug output to the logging streams (but not WHACK).
+ */
+
+void lswlog_dbg_pre(struct lswlog *buf);
+
+#define LSWDBG_(PREDICATE, BUF)						\
+	for (bool lswlog_p = PREDICATE; lswlog_p; lswlog_p = false)	\
+		LSWBUF_(BUF)						\
+			for (lswlog_dbg_pre(BUF); lswlog_p;		\
+			     lswlog_to_debug_stream(BUF),		\
+				     lswlog_p = false)
+
+#define LSWDBGP(DEBUG, BUF) LSWDBG_(DBGP(DEBUG), BUF)
+#define LSWDBG(BUF) LSWDBG_(true, BUF)
+
+/*
+ * Send log output the logging streams (and WHACK).
+ */
+
+void lswlog_pre(struct lswlog *buf);
+
+#define LSWLOG(BUF)							\
+	for (bool lswlog_p = true; lswlog_p; lswlog_p = false)		\
+		LSWBUF_(BUF)						\
+			for (lswlog_pre(BUF); lswlog_p;			\
+			     lswlog_to_logger_stream(BUF, RC_LOG),	\
+				     lswlog_p = false)
+
+/*
+ * ARRAY, a previously allocated array, containing the accumulated
+ * NUL-terminated output.
+ *
+ * The following offsets into ARRAY are maintained:
+ *
+ *    0 <= LEN <= BOUND < ROOF < sizeof(ARRAY)
+ *
+ * ROOF < sizeof(ARRAY); ARRAY[ROOF]==CANARY
+ *
+ * The offset to the last character in the array.  It contains a
+ * canary intended to catch overflows.  When sizeof(ARRAY) is needed,
+ * ROOF should be used as otherwise the canary may be corrupted.
+ *
+ * BOUND < ROOF; ARRAY[BOUND]=='\0'
+ *
+ * Limit on how many characters can be appended.
+ *
+ * LEN < BOUND; ARRAY[LEN]=='\0'
+ *
+ * Equivalent to strlen(BUF).  BOUND-LEN is always the amount of
+ * unused space in the array.
+ *
+ * When LEN<BOUND, space for BOUND-LEN characters, including the
+ * terminating NUL, is still available (when BOUND-LEN==1, a single
+ * NUL (empty string) write is possible).
+ *
+ * When LEN==BOUND, the array is full and writes are discarded.
+ *
+ * When the ARRAY fills, the last few characters are overwritten with
+ * DOTS.
  */
 
 struct lswlog {
-	/*
-	 * BUF contains the accumulated log output.  It is always NUL
-	 * terminated (LEN specifes the location of the NUL).
-	 *
-	 * BUF can contain up to LOG_WIDTH-1 characters (aka BOUND-1)
-	 * of log output (i.e. LEN<LOG_WIDTH).
-	 *
-	 * An attempt to accumulate more than that will cause the
-	 * output to be truncated, and last few characters replaced by
-	 * DOTS.
-	 *
-	 * A buffer containing truncated output is identified by LEN
-	 * == LOG_WIDTH (aka BOUND).
-	 */
-	signed char parrot;
-	char buf[LOG_WIDTH + 1]; /* extra NUL */
-	signed char canary;
+	char *array;
+	/* 0 <= LEN < BOUND < ROOF */
 	size_t len;
+	size_t bound;
+	size_t roof;
+	const char *dots;
 };
-
-extern const struct lswlog empty_lswlog;
 
 /*
  * To debug, set this to printf or similar.
  */
 extern int (*lswlog_debugf)(const char *format, ...) PRINTF_LIKE(1);
 
-#define LSWLOG_PARROT -1
-#define LSWLOG_CANARY -2
+#define LSWBUF_CANARY -2
 
-#define PASSERT_LSWLOG(LOG, BOUND)					\
+#define PASSERT_LSWBUF(BUF)						\
 	do {								\
-		passert((LOG)->parrot == LSWLOG_PARROT);		\
-		/* POS/BOUND well defined */				\
-		passert((LOG)->len <= (BOUND));				\
-		passert((BOUND) < sizeof((LOG)->buf));			\
+		passert(BUF->dots != NULL);				\
+		/* LEN/BOUND well defined */				\
+		passert((BUF)->len <= (BUF)->bound);			\
+		passert((BUF)->bound < (BUF)->roof);			\
 		/* always NUL terminated */				\
-		/* passert((LOG)->len < sizeof((LOG)->buf)) */;		\
-		passert((LOG)->buf[(LOG)->len] == '\0');		\
-		/* canary intact */					\
-		passert((LOG)->canary == LSWLOG_CANARY);		\
+		passert((BUF)->array[(BUF)->len] == '\0');		\
+		passert((BUF)->array[(BUF)->bound] == '\0');		\
+		/* overflow? */						\
+		passert((BUF)->array[(BUF)->roof] == LSWBUF_CANARY);	\
 	} while (false)
-
-/*
- * Try to append the message to the end of the log buffer.
- *
- * If there is insufficient space, the output is truncated and "..."
- * is appended.
- *
- * Like C99 snprintf() et.al., always return the untruncated message
- * length.
- */
-size_t lswlogvf(struct lswlog *log, const char *format, va_list ap);
-size_t lswlogf(struct lswlog *log, const char *format, ...) PRINTF_LIKE(2);
-size_t lswlogs(struct lswlog *log, const char *string);
-size_t lswlogl(struct lswlog *log, struct lswlog *buf);
 
 #endif /* _LSWLOG_H_ */

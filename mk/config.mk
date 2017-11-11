@@ -119,6 +119,12 @@ MANTREE?=$(DESTDIR)$(INC_USRLOCAL)/$(INC_MANDIR)
 # where configuration files go
 FINALSYSCONFDIR?=/etc
 
+# run dir - defaults to /run/pluto
+# Some older systems might need to set this to /var/run/pluto
+# DEFAULT_RUNDIR=/run/pluto
+FINALRUNDIR?=/run/pluto
+RUNDIR?=$(DESTDIR)$(FINALRUNDIR)
+
 # final configuration file
 FINALCONFFILE?=$(FINALSYSCONFDIR)/ipsec.conf
 CONFFILE?=$(DESTDIR)$(FINALCONFFILE)
@@ -250,10 +256,16 @@ NSS_REQ_AVA_COPY?=true
 # is currently true for basically all distro's
 USE_XFRM_HEADER_COPY?=true
 
+# Enable NIC IPsec hardware offloading API. Introduced in Linux Kernel 4.12
+USE_NIC_OFFLOAD?=true
+
 # When compiling on a system where unbound is missing the required unbound-event.h
 # include file, enable this workaround option that will enable an included copy of
 # this file as shipped with libreswan. The copy is taken from unbound 1.6.0.
 USE_UNBOUND_EVENT_H_COPY?=true
+
+# The default DNSSEC root key location is set to /var/lib/unbound/root.key
+# DEFAULT_DNSSEC_ROOTKEY_FILE=/var/lib/unbound/root.key
 
 # To build with clang, use: scan-build make programs
 #GCC=clang
@@ -333,6 +345,7 @@ ifeq ($(USE_SYSTEMD_WATCHDOG),true)
 SD_TYPE=notify
 SD_WATCHDOGSEC?=200
 else
+SD_WATCHDOGSEC?=0
 SD_TYPE=simple
 endif
 
@@ -461,6 +474,8 @@ NONINTCONFIG=oldconfig
 ifndef IPSECVERSION
 IPSECVERSION:=$(shell ${LIBRESWANSRCDIR}/packaging/utils/setlibreswanversion ${IPSECBASEVERSION} ${LIBRESWANSRCDIR})
 export IPSECVERSION
+endif
+ifndef IPSECVIDVERSION
 # VID is a somewhat shortened version, eg "3.5" or "3.5-xxx"
 IPSECVIDVERSION:=$(shell echo ${IPSECVERSION} | sed 's/^\([^-]*\)-\([^-]*\)-.*/\1-\2/')
 export IPSECVIDVERSION
@@ -488,21 +503,23 @@ KLIPSSRCDIR=${LIBRESWANSRCDIR}/linux/net/ipsec
 #KLIPSSRCDIR=/mara1/git/klips/net/ipsec
 
 LIBSWANDIR=${LIBRESWANSRCDIR}/lib/libswan
-LIBRESWANLIB=${OBJDIRTOP}/lib/libswan/libswan.a
-LSWLOGLIB=${OBJDIRTOP}/lib/liblswlog/liblswlog.a
-# XXX: $(LSWLOGLIB) has circular references to $(LIBRESWANLIB).
-LSWLOGLIBS=$(LSWLOGLIB) $(LIBRESWANLIB)
+
+# Need to specify absolute paths as 'make' (checks dependencies) and
+# 'ld' (does the link) are run from different directories.
+LIBRESWANLIB=$(abs_top_builddir)/lib/libswan/libswan.a
+LSWTOOLLIB=$(abs_top_builddir)/lib/liblswtool/liblswtool.a
+
+# XXX: $(LSWTOOLLIB) has circular references to $(LIBRESWANLIB).
+LSWTOOLLIBS=$(LSWTOOLLIB) $(LIBRESWANLIB)
 
 LIBDESSRCDIR=${LIBRESWANSRCDIR}/linux/crypto/ciphers/des
-LIBTWOFISH=${OBJDIRTOP}/lib/libcrypto/libtwofish/libtwofish.a
-LIBSERPENT=${OBJDIRTOP}/lib/libcrypto/libserpent/libserpent.a
 
 WHACKLIB=${OBJDIRTOP}/lib/libwhack/libwhack.a
 IPSECCONFLIB=${OBJDIRTOP}/lib/libipsecconf/libipsecconf.a
 
 # export everything so that scripts can use them.
 export LIBSWANDIR LIBRESWANSRCDIR ARCH PORTINCLUDE
-export LIBRESWANLIB LSWLOGLIB
+export LIBRESWANLIB LSWTOOLLIB
 export LIBDESSRCDIR
 export LIBTWOFISH LIBSERPENT
 export WHACKLIB IPSECCONFLIB
@@ -528,6 +545,7 @@ TRANSFORM_VARIABLES = sed -e "s:@IPSECVERSION@:$(IPSECVERSION):g" \
 			-e "s:@FINALVARDIR@:$(FINALVARDIR):g" \
 			-e "s:@IPSEC_CONF@:$(FINALCONFFILE):g" \
 			-e "s:@IPSEC_CONFDDIR@:$(FINALCONFDDIR):g" \
+			-e "s:@IPSEC_RUNDIR@:$(FINALRUNDIR):g" \
 			-e "s:@IPSEC_NSSDIR@:$(FINALNSSDIR):g" \
 			-e "s:@IPSEC_DIR@:$(FINALBINDIR):g" \
 			-e "s:@IPSEC_EXECDIR@:$(FINALLIBEXECDIR):g" \

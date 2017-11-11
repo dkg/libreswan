@@ -50,12 +50,7 @@ char *myid_str[MYID_SPECIFIED + 1];     /* string form of IDs */
 
 const struct id *resolve_myid(const struct id *id)
 {
-	// char tmpid[IDTOA_BUF];
-
-	// idtoa(id, tmpid, sizeof(tmpid));
-	// loglog(RC_LOG_SERIOUS,"resolve_myid() called for id:%s",tmpid);
-
-	if ((id)->kind == ID_MYID) {
+	if (id->kind == ID_MYID) {
 		return &myids[myid_state];
 	} else {
 		return id;
@@ -70,8 +65,7 @@ void show_myid_status(void)
 	whack_log(RC_COMMENT, "myid = %s", idstr);
 }
 
-/* Fills in myid from environment variable IPSECmyid or defaultrouteaddr
- */
+/* Fills in myid from environment variable IPSECmyid or defaultrouteaddr */
 void init_id(void)
 {
 	passert(empty_id.kind == ID_NONE);
@@ -118,7 +112,7 @@ void set_myid(enum myid_state s, char *idstr)
 
 void set_myFQDN(void)
 {
-	char FQDN[HOST_NAME_MAX + 1];
+	char FQDN[SWAN_MAX_DOMAIN_LEN];
 	int r = gethostname(FQDN, sizeof(FQDN));
 
 	free_id_content(&myids[MYID_HOSTNAME]);

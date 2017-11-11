@@ -46,6 +46,8 @@ const struct hash_desc ike_alg_hash_md5 = {
 		.algo_type = IKE_ALG_HASH,
 		.id = {
 			[IKEv1_OAKLEY_ID] = OAKLEY_MD5,
+			[IKEv1_ESP_ID] = -1,
+			[IKEv2_ALG_ID] = -1,
 		},
 		.nss_mechanism = CKM_MD5,
 	},
@@ -66,6 +68,7 @@ const struct prf_desc ike_alg_prf_md5 = {
 		.algo_type = IKE_ALG_PRF,
 		.id = {
 			[IKEv1_OAKLEY_ID] = OAKLEY_MD5,
+			[IKEv1_ESP_ID] = -1,
 			[IKEv2_ALG_ID] = IKEv2_PRF_HMAC_MD5,
 		},
 	},
@@ -90,5 +93,6 @@ const struct integ_desc ike_alg_integ_md5 = {
 	},
 	.integ_keymat_size = MD5_DIGEST_SIZE,
 	.integ_output_size = MD5_DIGEST_SIZE_96,
+	.integ_ikev1_ah_transform = AH_MD5,
 	.prf = &ike_alg_prf_md5,
 };

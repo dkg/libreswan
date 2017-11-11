@@ -37,7 +37,6 @@
 
 #include "ipsecconf/starterwhack.h"
 #include "ipsecconf/confread.h"
-#include "ipsecconf/files.h"
 #include "ipsecconf/starterlog.h"
 
 #include "socketwrapper.h"
@@ -219,7 +218,7 @@ static int starter_whack_read_reply(int sock,
 	return ret;
 }
 
-static int send_whack_msg(struct whack_message *msg, char *ctlbase)
+static int send_whack_msg(struct whack_message *msg, char *ctlsocket)
 {
 	struct sockaddr_un ctl_addr = { .sun_family = AF_UNIX };
 	int sock;
@@ -229,7 +228,7 @@ static int send_whack_msg(struct whack_message *msg, char *ctlbase)
 	int ret;
 
 	/* copy socket location */
-	strncpy(ctl_addr.sun_path, ctlbase, sizeof(ctl_addr.sun_path) - 1);
+	fill_and_terminate(ctl_addr.sun_path, ctlsocket, sizeof(ctl_addr.sun_path));
 
 	/*  Pack strings */
 	wp.msg = msg;
@@ -254,8 +253,10 @@ static int send_whack_msg(struct whack_message *msg, char *ctlbase)
 		return -1;
 	}
 	if (connect(sock, (struct sockaddr *)&ctl_addr,
-			offsetof(struct sockaddr_un,
-				sun_path) + strlen(ctl_addr.sun_path)) < 0) {
+			offsetof(struct sockaddr_un, sun_path) +
+				strlen(ctl_addr.sun_path)) <
+		0)
+	{
 		starter_log(LOG_LEVEL_ERR, "connect(pluto_ctl) failed: %s",
 			strerror(errno));
 		close(sock);
@@ -469,7 +470,7 @@ static int starter_whack_add_pubkey(struct starter_config *cfg,
 					    "\tsending %s %srsasigkey=%s",
 					    connection_name(conn), lr, end->rsakey1);
 				msg.keyval.ptr = (unsigned char *)keyspace;
-				ret = send_whack_msg(&msg, cfg->ctlbase);
+				ret = send_whack_msg(&msg, cfg->ctlsocket);
 			}
 		}
 	}
@@ -506,7 +507,7 @@ static int starter_whack_add_pubkey(struct starter_config *cfg,
 					    "\tsending %s %srsasigkey2=%s",
 					    connection_name(conn), lr, end->rsakey1);
 				msg.keyval.ptr = (unsigned char *)keyspace;
-				return send_whack_msg(&msg, cfg->ctlbase);
+				return send_whack_msg(&msg, cfg->ctlsocket);
 			}
 		}
 	}
@@ -613,6 +614,7 @@ static int starter_whack_basic_add_conn(struct starter_config *cfg,
 		msg.nat_keepalive = conn->options[KBF_NAT_KEEPALIVE];
 	else
 		msg.nat_keepalive = TRUE;
+
 	if (conn->options_set[KBF_IKEV1_NATT])
 		msg.ikev1_natt = conn->options[KBF_IKEV1_NATT];
 	else
@@ -715,7 +717,7 @@ static int starter_whack_basic_add_conn(struct starter_config *cfg,
 	msg.ike = conn->ike;
 
 
-	r = send_whack_msg(&msg, cfg->ctlbase);
+	r = send_whack_msg(&msg, cfg->ctlsocket);
 	if (r != 0)
 		return r;
 
@@ -859,7 +861,7 @@ static int starter_permutate_conns(int
 
 		success = (*operation)(cfg, &sc);
 		if (success != 0) {
-			/* fail at first failure? . I think so */
+			/* Fail at first failure?  I think so. */
 			return success;
 		}
 
@@ -919,7 +921,7 @@ static int starter_whack_basic_route_conn(struct starter_config *cfg,
 	init_whack_msg(&msg);
 	msg.whack_route = TRUE;
 	msg.name = connection_name(conn);
-	return send_whack_msg(&msg, cfg->ctlbase);
+	return send_whack_msg(&msg, cfg->ctlsocket);
 }
 
 int starter_whack_route_conn(struct starter_config *cfg,
@@ -943,7 +945,7 @@ int starter_whack_initiate_conn(struct starter_config *cfg,
 	msg.whack_initiate = TRUE;
 	msg.whack_async = TRUE;
 	msg.name = connection_name(conn);
-	return send_whack_msg(&msg, cfg->ctlbase);
+	return send_whack_msg(&msg, cfg->ctlsocket);
 }
 
 int starter_whack_listen(struct starter_config *cfg)
@@ -952,5 +954,5 @@ int starter_whack_listen(struct starter_config *cfg)
 
 	init_whack_msg(&msg);
 	msg.whack_listen = TRUE;
-	return send_whack_msg(&msg, cfg->ctlbase);
+	return send_whack_msg(&msg, cfg->ctlsocket);
 }

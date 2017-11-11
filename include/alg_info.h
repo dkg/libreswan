@@ -27,6 +27,8 @@
 struct parser_context;
 struct alg_info;
 struct lswlog;
+struct parser_protocol;
+struct proposal_info;
 
 /*
  * Parameters to tune the parser.
@@ -35,16 +37,49 @@ struct lswlog;
 struct parser_policy {
 	bool ikev1;
 	bool ikev2;
+	/*
+	 * According to current policy, is the algorithm ok
+	 * (supported)?  If it isn't return FALSE.
+	 *
+	 * For instance, an IKE algorithm requires in-process support;
+	 * while an ESP/AH algorithm requires kernel support.
+	 */
+	bool (*alg_is_ok)(const struct ike_alg *alg);
+};
+
+/*
+ * Defaults to fill in.
+ */
+
+struct proposal_defaults {
+	const struct ike_alg **dh;
+	const struct ike_alg **prf;
+	const struct ike_alg **integ;
+	const struct ike_alg **encrypt;
 };
 
 /*
  * Parameters to set the parser's basic behaviour - ESP/AH/IKE.
  */
 
-struct parser_param {
-	const char *protocol;
+struct parser_protocol {
+	const char *name;
 	enum ike_alg_key ikev1_alg_id;
-	bool (*alg_is_implemented)(const struct ike_alg *alg);
+
+	/*
+	 * Lists of defaults.
+	 */
+	const struct proposal_defaults *ikev1_defaults;
+	const struct proposal_defaults *ikev2_defaults;
+
+	/*
+	 * Is the proposal OK?
+	 *
+	 * This is the final check, if this succeeds then the proposal
+	 * is added.
+	 */
+	bool (*proposal_ok)(const struct proposal_info *proposal,
+			    char *err_buf, size_t err_buf_len);
 
 	/*
 	 * XXX: Is the proto-id needed?  Parser should be protocol
@@ -74,17 +109,14 @@ struct parser_param {
 	 *
 	 * WARNING:
 	 *
-	 * As of 2017-08-08, pluto proper doesn't follow this
+	 * As of 2017-08-10, pluto proper doesn't always follow this
 	 * convention.  Instead of 'ike_alg_integ_null', NULL is used
 	 * for 'null' integrity (encryption does use
 	 * 'ike_alg_encrypt_null' it seems).  This affects the
 	 * following fields in pluto:
 	 *
-	 * - struct proposal_info .integ, populated by .alg_info_add()
-	 *   and used by the proposal code
-	 *
-	 * - struct trans_attrs .integ, populated by the proposal code
-	 *   and used by the crypto and kernel code
+	 * - struct trans_attrs .integ, which is populated by the
+	 *   proposal code and used by the crypto and kernel code
 	 *
 	 * - struct kernel_alg .integ, populated and used by the
 	 *   kernel code
@@ -106,30 +138,29 @@ struct parser_param {
 	 *   litering the code
 	 */
 	const char *(*alg_info_add)(const struct parser_policy *const policy,
-				    struct alg_info *alg_info,
+                                    struct alg_info *alg_info,
 				    const struct encrypt_desc *encrypt, int ek_bits,
 				    const struct prf_desc *prf,
 				    const struct integ_desc *integ,
 				    const struct oakley_group_desc *dh_group,
-				    char *err_buf, size_t err_buf_len);
-
+                                    char *err_buf, size_t err_buf_len);
 	/*
 	 * This lookup functions must set err and return null if NAME
 	 * isn't valid.
 	 */
-	const struct ike_alg *(*encrypt_alg_byname)(const struct parser_param *param,
+	const struct ike_alg *(*encrypt_alg_byname)(const struct parser_protocol *protocol,
 						    const struct parser_policy *const policy,
 						    char *err_buf, size_t err_buf_len,
 						    const char *name, size_t bit_length);
-	const struct ike_alg *(*prf_alg_byname)(const struct parser_param *param,
+	const struct ike_alg *(*prf_alg_byname)(const struct parser_protocol *protocol,
 						const struct parser_policy *const policy,
 						char *err_buf, size_t err_buf_len,
 						const char *name, size_t key_bit_length);
-	const struct ike_alg *(*integ_alg_byname)(const struct parser_param *param,
+	const struct ike_alg *(*integ_alg_byname)(const struct parser_protocol *protocol,
 						  const struct parser_policy *const policy,
 						  char *err_buf, size_t err_buf_len,
 						  const char *name, size_t key_bit_length);
-	const struct ike_alg *(*dh_alg_byname)(const struct parser_param *param,
+	const struct ike_alg *(*dh_alg_byname)(const struct parser_protocol *protocol,
 					       const struct parser_policy *const policy,
 					       char *err_buf, size_t err_buf_len,
 					       const char *name, size_t key_bit_length);
@@ -148,24 +179,25 @@ struct proposal_info {
 	 */
 	const struct encrypt_desc *encrypt;
 	size_t enckeylen;    /* keylength for ESP transform (bits) */
-	u_int8_t ikev1esp_transid;       /* enum ipsec_cipher_algo: ESP transform (AES, 3DES, etc.)*/
 	/*
 	 * The integrity and PRF algorithms.
 	 */
 	const struct prf_desc *prf;
 	const struct integ_desc *integ;
-	u_int16_t ikev1esp_auth;         /* enum ikev1_auth_attribute: AUTH */
 	/*
 	 * PFS/DH negotiation.
 	 */
 	const struct oakley_group_desc *dh;
+	/*
+	 * Which protocol is this proposal intended for?
+	 */
+	const struct parser_protocol *protocol;
 };
 
 /* common prefix of struct alg_info_esp and struct alg_info_ike */
 struct alg_info {
 	int alg_info_cnt;
 	int ref_cnt;
-	unsigned alg_info_protoid;
 	struct proposal_info proposals[128];
 };
 
@@ -194,22 +226,8 @@ extern struct alg_info_esp *alg_info_ah_create_from_str(const struct parser_poli
 							const char *alg_str,
 							char *err_buf, size_t err_buf_len);
 
-void alg_info_ike_snprint(char *buf, size_t buflen,
-			  const struct alg_info_ike *alg_info_ike);
-void alg_info_esp_snprint(char *buf, size_t buflen,
-			  const struct alg_info_esp *alg_info_esp);
-
-void alg_info_snprint_ike(char *buf, size_t buflen,
-			  struct alg_info_ike *alg_info);
-
-void alg_info_snprint_ike_info(char *buf, size_t buflen,
-			       const struct proposal_info *ike_info);
-void alg_info_snprint_esp_info(char *buf, size_t buflen,
-			       const struct proposal_info *esp_info);
-void alg_info_snprint_phase2(char *buf, size_t buflen,
-			     struct alg_info_esp *alg_info);
-
-size_t lswlog_proposal_info(struct lswlog *log, struct proposal_info *proposal);
+size_t lswlog_proposal_info(struct lswlog *log, const struct proposal_info *proposal);
+size_t lswlog_alg_info(struct lswlog *log, const struct alg_info *alg_info);
 
 /*
  * Iterate through the elements of an ESP or IKE table.
@@ -251,6 +269,12 @@ struct alg_info *alg_info_parse_str(const struct parser_policy *policy,
 				    struct alg_info *alg_info,
 				    const char *alg_str,
 				    char *err_buf, size_t err_buf_len,
-				    const struct parser_param *param);
+				    const struct parser_protocol *protocol);
+
+/*
+ * Check that encrypt==AEAD and/or integ==none don't contradict.
+ */
+bool proposal_aead_none_ok(const struct proposal_info *proposal,
+			   char *err_buf, size_t err_buf_len);
 
 #endif /* ALG_INFO_H */

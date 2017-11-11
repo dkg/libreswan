@@ -18,7 +18,7 @@ west #
  echo "initdone"
 initdone
 west #
- ipsec whack --debug-all --impair-retransmits
+ ipsec whack --debug-all --impair retransmits
 west #
  ipsec auto --up  westnet-eastnet-ikev2
 002 "westnet-eastnet-ikev2" #1: initiating Main Mode
@@ -35,8 +35,7 @@ west #
 west #
  grep leak /tmp/pluto.log
 leak-detective enabled
-leak: kernel integ, item size: 32
-leak detective found 1 leaks, total size 32
+leak detective found no leaks
 west #
  ../bin/check-for-core.sh
 west #

@@ -22,7 +22,7 @@
 #include "ike_alg.h"
 #include "ike_alg_null.h"
 
-bool alg_byname_ok(const struct parser_param *param,
+bool alg_byname_ok(const struct parser_protocol *protocol,
 		   const struct parser_policy *const policy,
 		   const struct ike_alg *alg,
 		   const char *name,
@@ -32,29 +32,33 @@ bool alg_byname_ok(const struct parser_param *param,
 	 * If the connection is IKEv1|IKEv2 then this code will
 	 * exclude anything not supported by both protocols.
 	 */
-	if (policy->ikev1 && alg->id[param->ikev1_alg_id] == 0) {
+	if (policy->ikev1 && alg->id[protocol->ikev1_alg_id] < 0) {
 		snprintf(err_buf, err_buf_len,
 			 "%s %s algorithm '%s' is not supported by IKEv1",
-			 param->protocol, ike_alg_type_name(alg->algo_type),
+			 protocol->name, ike_alg_type_name(alg->algo_type),
 			 name);
 		return false;
 	}
-	if (policy->ikev2 && alg->id[IKEv2_ALG_ID] == 0) {
+	if (policy->ikev2 && alg->id[IKEv2_ALG_ID] < 0) {
 		snprintf(err_buf, err_buf_len,
 			 "%s %s algorithm '%s' is not supported by IKEv2",
-			 param->protocol, ike_alg_type_name(alg->algo_type),
+			 protocol->name, ike_alg_type_name(alg->algo_type),
 			 name);
 		return false;
 	}
 	/*
-	 * Is it backed by an implementation?  For IKE that is
-	 * in-process, for ESP/AH, presumably that is in the kernel
-	 * (well except for DH which is still in-process).
+	 * According to parser policy, is the algorithm "implemented"?
+	 *
+	 * For IKE, this checks things like an in-process
+	 * implementation being present.  For ESP/AH this checks that
+	 * it is is implemented in the kernel (well except for DH
+	 * which is still requires an in-process implementation).
 	 */
-	if (!param->alg_is_implemented(alg)) {
+	passert(policy->alg_is_ok != NULL);
+	if (!policy->alg_is_ok(alg)) {
 		snprintf(err_buf, err_buf_len,
-			 "%s %s algorithm '%s' is not implemented",
-			 param->protocol, ike_alg_type_name(alg->algo_type),
+			 "%s %s algorithm '%s' is not supported",
+			 protocol->name, ike_alg_type_name(alg->algo_type),
 			 name);
 		return false;
 	}
@@ -69,14 +73,14 @@ bool alg_byname_ok(const struct parser_param *param,
 	if (!ike_alg_is_valid(alg)) {
 		snprintf(err_buf, err_buf_len,
 			 "%s %s algorithm '%s' is not valid",
-			 param->protocol, ike_alg_type_name(alg->algo_type),
+			 protocol->name, ike_alg_type_name(alg->algo_type),
 			 name);
 		return false;
 	}
 	return true;
 }
 
-static const struct ike_alg *alg_byname(const struct parser_param *param,
+static const struct ike_alg *alg_byname(const struct parser_protocol *protocol,
 					const struct parser_policy *const policy,
 					const struct ike_alg_type *type,
 					char *err_buf, size_t err_buf_len,
@@ -88,15 +92,15 @@ static const struct ike_alg *alg_byname(const struct parser_param *param,
 		 * Known at all?  Poke around in the enum tables to
 		 * see if it turns up.
 		 */
-		if (ike_alg_enum_match(type, param->ikev1_alg_id, name) >= 0
+		if (ike_alg_enum_match(type, protocol->ikev1_alg_id, name) >= 0
 		    || ike_alg_enum_match(type, IKEv2_ALG_ID, name) >= 0) {
 			snprintf(err_buf, err_buf_len,
 				 "%s %s algorithm '%s' is not supported",
-				 param->protocol, ike_alg_type_name(type), name);
+				 protocol->name, ike_alg_type_name(type), name);
 		} else {
 			snprintf(err_buf, err_buf_len,
 				 "%s %s algorithm '%s' is not recognized",
-				 param->protocol, ike_alg_type_name(type), name);
+				 protocol->name, ike_alg_type_name(type), name);
 		}
 		return NULL;
 	}
@@ -104,7 +108,7 @@ static const struct ike_alg *alg_byname(const struct parser_param *param,
 	/*
 	 * Does it pass muster?
 	 */
-	if (!alg_byname_ok(param, policy, alg, name,
+	if (!alg_byname_ok(protocol, policy, alg, name,
 			   err_buf, err_buf_len)) {
 		passert(err_buf[0] != '\0');
 		return NULL;
@@ -113,12 +117,12 @@ static const struct ike_alg *alg_byname(const struct parser_param *param,
 	return alg;
 }
 
-const struct ike_alg *encrypt_alg_byname(const struct parser_param *param,
+const struct ike_alg *encrypt_alg_byname(const struct parser_protocol *protocol,
 					 const struct parser_policy *const policy,
 					 char *err_buf, size_t err_buf_len,
 					 const char *name, size_t key_bit_length)
 {
-	const struct ike_alg *alg = alg_byname(param, policy, IKE_ALG_ENCRYPT,
+	const struct ike_alg *alg = alg_byname(protocol, policy, IKE_ALG_ENCRYPT,
 					       err_buf, err_buf_len, name);
 	if (alg == NULL) {
 		return NULL;
@@ -146,38 +150,35 @@ const struct ike_alg *encrypt_alg_byname(const struct parser_param *param,
 	return alg;
 }
 
-const struct ike_alg *prf_alg_byname(const struct parser_param *param,
+const struct ike_alg *prf_alg_byname(const struct parser_protocol *protocol,
 				     const struct parser_policy *const policy,
 				     char *err_buf, size_t err_buf_len,
 				     const char *name,
 				     size_t key_bit_length UNUSED)
 {
-	return alg_byname(param, policy, IKE_ALG_PRF,
+	return alg_byname(protocol, policy, IKE_ALG_PRF,
 			  err_buf, err_buf_len,
 			  name);
 }
 
-const struct ike_alg *integ_alg_byname(const struct parser_param *param,
+const struct ike_alg *integ_alg_byname(const struct parser_protocol *protocol,
 				       const struct parser_policy *const policy,
 				       char *err_buf, size_t err_buf_len,
 				       const char *name,
 				       size_t key_bit_length UNUSED)
 {
-	if (strcasecmp(name, "null") == 0) {
-		return &alg_info_integ_null.common;
-	}
-	return alg_byname(param, policy, IKE_ALG_INTEG,
+	return alg_byname(protocol, policy, IKE_ALG_INTEG,
 			  err_buf, err_buf_len,
 			  name);
 }
 
-const struct ike_alg *dh_alg_byname(const struct parser_param *param,
+const struct ike_alg *dh_alg_byname(const struct parser_protocol *protocol,
 				    const struct parser_policy *const policy,
 				    char *err_buf, size_t err_buf_len,
 				    const char *name,
 				    size_t key_bit_length UNUSED)
 {
-	return alg_byname(param, policy, IKE_ALG_DH,
+	return alg_byname(protocol, policy, IKE_ALG_DH,
 			  err_buf, err_buf_len,
 			  name);
 }

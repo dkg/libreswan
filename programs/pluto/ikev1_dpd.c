@@ -156,7 +156,7 @@ stf_status dpd_init(struct state *st)
 	if (p1st->hidden_variables.st_peer_supports_dpd) {
 		DBG(DBG_DPD, DBG_log("Dead Peer Detection (RFC 3706): enabled"));
 		if (st->st_dpd_event == NULL || ev_before(st->st_dpd_event,
-					st->st_connection->dpd_delay)){
+					st->st_connection->dpd_delay)) {
 			if (st->st_dpd_event != NULL)
 				delete_dpd_event(st);
 			event_schedule(EVENT_DPD,
@@ -216,17 +216,17 @@ static void dpd_outI(struct state *p1st, struct state *st, bool eroute_care,
 			fmt_conn_instance(st->st_connection, cib));
 	});
 
-	/* If no DPD, then get out of here */
+	/* if peer doesn't support DPD, DPD should never have started */
+	pexpect(st->hidden_variables.st_peer_supports_dpd);	/* ??? passert? */
 	if (!st->hidden_variables.st_peer_supports_dpd) {
-		DBG(DBG_DPD,
-		    DBG_log("DPD: peer does not support dpd"));
+		DBG(DBG_DPD, DBG_log("DPD: peer does not support dpd"));
 		return;
 	}
 
-	/* If there is no state, there can be no DPD */
+	/* If there is no IKE state, there can be no DPD */
+	pexpect(IS_ISAKMP_SA_ESTABLISHED(p1st->st_state));	/* ??? passert? */
 	if (!IS_ISAKMP_SA_ESTABLISHED(p1st->st_state)) {
-		DBG(DBG_DPD,
-		    DBG_log("DPD: no phase1 state, so no DPD"));
+		DBG(DBG_DPD, DBG_log("DPD: no phase1 state, so no DPD"));
 		return;
 	}
 
@@ -271,9 +271,9 @@ static void dpd_outI(struct state *p1st, struct state *st, bool eroute_care,
 	 * and return if it is active recently
 	 */
 	if (eroute_care && st->hidden_variables.st_nat_traversal == LEMPTY &&
-			!was_eroute_idle(st, delay)) {
-		DBG(DBG_DPD,
-		    DBG_log("DPD: out event not sent, phase 2 active"));
+			!was_eroute_idle(st, delay))
+	{
+		DBG(DBG_DPD, DBG_log("DPD: out event not sent, phase 2 active"));
 
 		/* update phase 2 time stamp only */
 		st->st_last_dpd = nw;

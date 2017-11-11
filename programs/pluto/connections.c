@@ -65,6 +65,7 @@
 #include "server.h"
 #include "kernel.h" /* needs connections.h */
 #include "log.h"
+#include "peerlog.h"
 #include "keys.h"
 #include "whack.h"
 #include "alg_info.h"
@@ -273,7 +274,7 @@ void delete_connection(struct connection *c, bool relations)
 			libreswan_log(
 				"deleting connection \"%s\"%s instance with peer %s {isakmp=#%lu/ipsec=#%lu}",
 				c->name, fmt_conn_instance(c, cib),
-				ipstr(&c->spd.that.host_addr, &b),
+				log_ip ? ipstr(&c->spd.that.host_addr, &b) : "<ip address>",
 				c->newest_isakmp_sa, c->newest_ipsec_sa);
 		}
 		c->kind = CK_GOING_AWAY;
@@ -614,7 +615,12 @@ size_t format_end(char *buf,
 
 	/* host */
 	if (host == NULL) {
-		addrtot(&this->host_addr, 0, host_space, sizeof(host_space));
+		if (log_ip) {
+			addrtot(&this->host_addr, 0, host_space, sizeof(host_space));
+		} else {
+			host_space[0] = '\0';
+			strncat(host_space, "<ip address>", sizeof(host_space));
+		}
 		host = host_space;
 		dohost_name = TRUE;
 	}
@@ -815,7 +821,7 @@ static void unshare_connection(struct connection *c)
 		alg_info_addref(&c->alg_info_esp->ai);
 
 	if (c->pool !=  NULL)
-		reference_addresspool(c->pool);
+		reference_addresspool(c);
 }
 
 static void load_end_nss_certificate(const char *which, CERTCertificate *cert,
@@ -1254,7 +1260,7 @@ void add_connection(const struct whack_message *wm)
 	if ((wm->policy & POLICY_SHUNT_MASK) != LEMPTY) {
 		if ((wm->policy & (POLICY_ID_AUTH_MASK & ~POLICY_AUTH_NEVER)) != LEMPTY) {
 			loglog(RC_FATAL,
-				"Failed to add connection \"%s\" : shunt connection cannot have authentication method other then authby=never",
+				"Failed to add connection \"%s\": shunt connection cannot have authentication method other then authby=never",
 				wm->name);
 			return;
 		}
@@ -1263,62 +1269,63 @@ void add_connection(const struct whack_message *wm)
 		case LEMPTY:
 			if (!LIN(POLICY_AUTH_NEVER, wm->policy)) {
 				loglog(RC_FATAL,
-					"Failed to add connection \"%s\" : non-shunt connection must have AH or ESP",
+					"Failed to add connection \"%s\": non-shunt connection must have AH or ESP",
 					wm->name);
 				return;
 			}
 			break;
 		case POLICY_AUTHENTICATE | POLICY_ENCRYPT:
 			loglog(RC_FATAL,
-				"Failed to add connection \"%s\" : non-shunt connection must specify either AH or ESP",
+				"Failed to add connection \"%s\": non-shunt connection must specify either AH or ESP",
 				wm->name);
 			return;
 		}
 	}
 
-	struct parser_policy parser_policy = {
-		.ikev1 = LIN(POLICY_IKEV1_ALLOW, wm->policy),
-		/*
-		 * logic needs to match pick_initiator()
-		 *
-		 * XXX: Once pluto is changed to IKEv1 XOR
-		 * IKEv2 it should be possible to move this
-		 * magic into pluto proper and instead pass a
-		 * simple boolean.
-		 */
-		.ikev2 = ((wm->policy & POLICY_IKEV2_PROPOSE)
-			  && (wm->policy & POLICY_IKEV2_ALLOW)),
-	};
-
 	if (!LIN(POLICY_AUTH_NEVER, wm->policy) && wm->ike != NULL) {
 		char err_buf[256] = "";	/* ??? big enough? */
+
+		struct parser_policy parser_policy = {
+			.ikev1 = LIN(POLICY_IKEV1_ALLOW, wm->policy),
+			/*
+			 * logic needs to match pick_initiator()
+			 *
+			 * XXX: Once pluto is changed to IKEv1 XOR
+			 * IKEv2 it should be possible to move this
+			 * magic into pluto proper and instead pass a
+			 * simple boolean.
+			 */
+			.ikev2 = ((wm->policy & POLICY_IKEV2_PROPOSE)
+				  && (wm->policy & POLICY_IKEV2_ALLOW)),
+			.alg_is_ok = ike_alg_is_ike,
+		};
 
 		alg_info_ike = alg_info_ike_create_from_str(&parser_policy, wm->ike,
 							    err_buf, sizeof(err_buf));
 
 		if (alg_info_ike == NULL) {
 			pexpect(err_buf[0]); /* something */
-			loglog(RC_FATAL, "Failed to add connection \"%s\" : ike string error: %s",
+			loglog(RC_FATAL, "Failed to add connection \"%s\": ike string error: %s",
 				wm->name, err_buf);
 			return;
 		}
 		if (alg_info_ike->ai.alg_info_cnt == 0) {
 			loglog(RC_FATAL,
-				"Failed to add connection \"%s\" : got 0 transforms for ike=\"%s\"",
+				"Failed to add connection \"%s\": got 0 transforms for ike=\"%s\"",
 				wm->name, wm->ike);
 			return;
 		}
 	}
 
 	if ((wm->policy & POLICY_IKEV2_PROPOSE) && (wm->policy & POLICY_IKEV2_ALLOW) == LEMPTY) {
-			loglog(RC_FATAL, "Failed to add connection \"%s\" : cannot insist on IKEv2 while forbidding it",
+			loglog(RC_FATAL, "Failed to add connection \"%s\": cannot insist on IKEv2 while forbidding it",
 				wm->name);
 			return;
 	}
 
 	if (wm->policy & POLICY_OPPORTUNISTIC) {
 		if ((wm->policy & POLICY_IKEV2_PROPOSE) == LEMPTY) {
-			loglog(RC_FATAL, "Failed to add connection \"%s\" : opportunistic connection MUST have ikev2=insist",
+			loglog(RC_FATAL, "Failed to add connection \"%s\": opportunistic connection MUST have ikev2=insist",
 				wm->name);
 			return;
 		}
@@ -1333,7 +1340,7 @@ void add_connection(const struct whack_message *wm)
 			loglog(RC_INFORMATIONAL, "Ignored esp= option for type=passthrough connection");
 		}
 		if (wm->left.authby != AUTH_UNSET || wm->right.authby != AUTH_UNSET) {
-			loglog(RC_FATAL, "Failed to add connection \"%s\" : leftauth= / rightauth= options are invalid for type=passthrough connection",
+			loglog(RC_FATAL, "Failed to add connection \"%s\": leftauth= / rightauth= options are invalid for type=passthrough connection",
 				wm->name);
 			return;
 		}
@@ -1343,13 +1350,13 @@ void add_connection(const struct whack_message *wm)
 		if (wm->left.authby != AUTH_UNSET || wm->right.authby != AUTH_UNSET) {
 			if ((wm->policy & POLICY_IKEV2_PROPOSE) == LEMPTY) {
 				loglog(RC_FATAL,
-					"Failed to add connection \"%s\" : leftauth= and rightauth= require ikev2=insist",
+					"Failed to add connection \"%s\": leftauth= and rightauth= require ikev2=insist",
 						wm->name);
 				return;
 			}
 			if (wm->left.authby == AUTH_UNSET || wm->right.authby == AUTH_UNSET) {
 				loglog(RC_FATAL,
-					"Failed to add connection \"%s\" : leftauth= and rightauth= must both be set or both be unset",
+					"Failed to add connection \"%s\": leftauth= and rightauth= must both be set or both be unset",
 						wm->name);
 				return;
 			}
@@ -1388,7 +1395,7 @@ void add_connection(const struct whack_message *wm)
 				}
 				if (conflict) {
 					loglog(RC_FATAL,
-						"Failed to add connection \"%s\" : leftauth=%s and rightauth=%s must not conflict with authby=%s",
+						"Failed to add connection \"%s\": leftauth=%s and rightauth=%s must not conflict with authby=%s",
 							wm->name,
 							enum_name(&ikev2_asym_auth_name, wm->left.authby),
 							enum_name(&ikev2_asym_auth_name, wm->right.authby),
@@ -1398,7 +1405,7 @@ void add_connection(const struct whack_message *wm)
 			} else { /* leftauth != rightauth so authby MUST be unset */
 				if ((wm->policy & POLICY_ID_AUTH_MASK) != LEMPTY) {
 					loglog(RC_FATAL,
-						"Failed to add connection \"%s\" : leftauth=%s is unequal to rightauth=%s so authby=%s must not be set",
+						"Failed to add connection \"%s\": leftauth=%s is unequal to rightauth=%s so authby=%s must not be set",
 							wm->name,
 							enum_name(&ikev2_asym_auth_name, wm->left.authby),
 							enum_name(&ikev2_asym_auth_name, wm->right.authby),
@@ -1408,7 +1415,7 @@ void add_connection(const struct whack_message *wm)
 				if ((wm->left.authby == AUTH_PSK && wm->right.authby == AUTH_NULL) ||
 				    (wm->left.authby == AUTH_NULL && wm->right.authby == AUTH_PSK)) {
 					loglog(RC_FATAL,
-						"Failed to add connection \"%s\" : cannot mix PSK and NULL authentication (leftauth=%s and rightauth=%s)",
+						"Failed to add connection \"%s\": cannot mix PSK and NULL authentication (leftauth=%s and rightauth=%s)",
 							wm->name,
 							enum_name(&ikev2_asym_auth_name, wm->left.authby),
 							enum_name(&ikev2_asym_auth_name, wm->right.authby));
@@ -1420,7 +1427,7 @@ void add_connection(const struct whack_message *wm)
 
 	if (wm->right.has_port_wildcard && wm->left.has_port_wildcard) {
 		loglog(RC_FATAL,
-			"Failed to add connection \"%s\" : cannot have protoport with %%any on both sides",
+			"Failed to add connection \"%s\": cannot have protoport with %%any on both sides",
 				wm->name);
 		return;
 	}
@@ -1480,25 +1487,31 @@ void add_connection(const struct whack_message *wm)
 		c->alg_info_esp = NULL;
 		if (wm->esp != NULL) {
 			DBG(DBG_CONTROL,
-				DBG_log("from whack: got --esp=%s",
-					wm->esp ? wm->esp : "NULL"));
+			    DBG_log("from whack: got --esp=%s", wm->esp));
+
+			struct parser_policy parser_policy = {
+				.ikev1 = LIN(POLICY_IKEV1_ALLOW, wm->policy),
+				/*
+				 * logic needs to match pick_initiator()
+				 *
+				 * XXX: Once pluto is changed to IKEv1
+				 * XOR IKEv2 it should be possible to
+				 * move this magic into pluto proper
+				 * and instead pass a simple boolean.
+				 */
+				.ikev2 = ((wm->policy & POLICY_IKEV2_PROPOSE)
+					  && (wm->policy & POLICY_IKEV2_ALLOW)),
+				.alg_is_ok = kernel_alg_is_ok,
+			};
 
 			if (c->policy & POLICY_ENCRYPT)
 				c->alg_info_esp = alg_info_esp_create_from_str(&parser_policy,
-					wm->esp ? wm->esp : "", err_buf, sizeof(err_buf));
+					wm->esp, err_buf, sizeof(err_buf));
 
 			if (c->policy & POLICY_AUTHENTICATE)
 				c->alg_info_esp = alg_info_ah_create_from_str(&parser_policy,
-					wm->esp ? wm->esp : "",  err_buf, sizeof(err_buf));
+					wm->esp,  err_buf, sizeof(err_buf));
 
-			DBG(DBG_CONTROL, {
-				char buf[256] = "<NULL>"; /* XXX: fix magic value */
-
-				if (c->alg_info_esp != NULL)
-					alg_info_esp_snprint(buf, sizeof(buf),
-							     c->alg_info_esp);
-				DBG_log("phase2alg string values: %s", buf);
-			});
 			if (c->alg_info_esp == NULL) {
 				loglog(RC_FATAL,
 				       "Failed to add connection \"%s\", esp=\"%s\" is invalid: %s",
@@ -1514,29 +1527,31 @@ void add_connection(const struct whack_message *wm)
 				pfree(c);
 				return;
 			}
+
+			LSWDBGP(DBG_CONTROL, buf) {
+				lswlogs(buf, "ESP/AH string values: ");
+				lswlog_alg_info(buf, &c->alg_info_esp->ai);
+			};
 		}
 
 		c->alg_info_ike = NULL;
-		if (wm->ike) {
+		if (wm->ike != NULL) {
 			c->alg_info_ike = alg_info_ike;
 
 			if (c->alg_info_ike == NULL) {
 				loglog(RC_FATAL,
-					"Failed to add connection \"%s\" : ike string error: %s",
+					"Failed to add connection \"%s\": ike string error: %s",
 					wm->name, err_buf);
 				pfree(c);
 				return;
 			}
-			DBG(DBG_CRYPT | DBG_CONTROL, {
-				char buf[256]; /* XXX: fix magic value */
-				alg_info_ike_snprint(buf, sizeof(buf),
-						     c->alg_info_ike);
-				DBG_log("ike (phase1) algorithm values: %s",
-					buf);
-			});
+			LSWDBGP(DBG_CRYPT | DBG_CONTROL, buf) {
+				lswlogs(buf, "ike (phase1) algorithm values: ");
+				lswlog_alg_info(buf, &c->alg_info_ike->ai);
+			};
 			if (c->alg_info_ike->ai.alg_info_cnt == 0) {
 				loglog(RC_FATAL,
-					"Failed to add connection \"%s\" : got 0 transforms for ike=\"%s\"",
+					"Failed to add connection \"%s\": got 0 transforms for ike=\"%s\"",
 					wm->name, wm->ike);
 				alg_info_free(&c->alg_info_ike->ai);
 				pfree(c);
@@ -1769,9 +1784,6 @@ void add_connection(const struct whack_message *wm)
 		 * need one. Does CK_TEMPLATE need one?
 		 */
 		c->spd.reqid = c->sa_reqid == 0 ? gen_reqid() : c->sa_reqid;
-#ifdef XAUTH_HAVE_PAM
-		c->pamh = NULL;
-#endif
 
 		/* force all oppo connections to have a client */
 		if (c->policy & POLICY_OPPORTUNISTIC) {
@@ -1885,7 +1897,7 @@ void add_connection(const struct whack_message *wm)
 		/* non configurable */
 		c->ike_window = IKE_V2_OVERLAPPING_WINDOW_SIZE;
 	} else {
-		loglog(RC_FATAL, "Failed to load connection \"%s\" : attempt to load incomplete connection",
+		loglog(RC_FATAL, "Failed to load connection \"%s\": attempt to load incomplete connection",
 			wm->name);
 	}
 
@@ -2239,7 +2251,12 @@ char *fmt_conn_instance(const struct connection *c, char buf[CONN_INST_BUF])
 					&c->spd.that.host_addr, "===", p);
 		} else {
 			*p++ = ' ';
-			addrtot(&c->spd.that.host_addr, 0, p, ADDRTOT_BUF);
+			if (!log_ip) {
+				p[0] = '\0';
+				strncat(p, "<ip address>", ADDRTOT_BUF - 1);
+			} else {
+				addrtot(&c->spd.that.host_addr, 0, p, ADDRTOT_BUF);
+			}
 		}
 	}
 
@@ -2712,7 +2729,7 @@ struct connection *find_host_connection(
 	return c;
 }
 
-stf_status ikev2_find_host_connection( struct connection **cp,
+stf_status ikev2_find_host_connection(struct connection **cp,
 		const ip_address *me, u_int16_t my_port, const ip_address *him,
 		u_int16_t his_port, lset_t policy)
 {
@@ -2842,6 +2859,7 @@ struct connection *find_next_host_connection(
 				 */
 				if ((c->policy & POLICY_OPPORTUNISTIC))
 					continue;
+
 				/* shunt match - stop the search for another conn if we are groupinstance*/
 				if (c->policy & POLICY_GROUPINSTANCE)
 					break;
@@ -2963,7 +2981,7 @@ struct connection *refine_host_connection(const struct state *st,
 {
 	struct connection *c = st->st_connection;
 	generalName_t *requested_ca = st->st_requested_ca;
-	/* Ensure the caller and us know the IKE version we are looking for */
+	/* Ensure the caller and we know the IKE version we are looking for */
 	bool ikev1 = auth_policy != LEMPTY;
 	bool ikev2 = this_authby != AUTH_UNSET;
 	bool ikev1_aggr = LIN(POLICY_AGGRESSIVE, auth_policy);
@@ -3894,15 +3912,16 @@ static void show_one_sr(const struct connection *c,
 #define OPT_PREFIX_STR(pre, s) (s) == NULL ? "" : (pre), (s) == NULL? "" : (s)
 
 	whack_log(RC_COMMENT,
-		"\"%s\"%s:     %s; my_ip=%s; their_ip=%s%s%s%s%s%s%s%s%s",
+		"\"%s\"%s:     %s; my_ip=%s; their_ip=%s%s%s%s%s; my_updown=%s;",
 		c->name, instance,
 		oriented(*c) ? "oriented" : "unoriented",
 		OPT_HOST(&c->spd.this.host_srcip, thisipb),
 		OPT_HOST(&c->spd.that.host_srcip, thatipb),
-		OPT_PREFIX_STR("; myup=", sr->this.updown),
-		OPT_PREFIX_STR("; theirup=", sr->that.updown),
 		OPT_PREFIX_STR("; mycert=", cert_nickname(&sr->this.cert)),
-		OPT_PREFIX_STR("; hiscert=", cert_nickname(&sr->that.cert)));
+		OPT_PREFIX_STR("; hiscert=", cert_nickname(&sr->that.cert)),
+		(sr->this.updown == NULL || streq(sr->this.updown, "%disabled")) ?
+			"<disabled>" : sr->this.updown
+	);
 
 #undef OPT_HOST
 #undef OPT_PREFIX_STR
@@ -4109,13 +4128,21 @@ void show_one_connection(const struct connection *c)
 		strcpy(markstr, "unset");
 
 	whack_log(RC_COMMENT,
-		  "\"%s\"%s:   nflog-group: %s; mark: %s; vti-iface:%s; vti-routing:%s; vti-shared:%s; nic-offload:%s",
+		  "\"%s\"%s:   nflog-group: %s; mark: %s; vti-iface:%s; "
+		  "vti-routing:%s; vti-shared:%s;"
+#ifdef USE_NIC_OFFLOAD
+		 " nic-offload:%s;"
+#endif
+		  ,
 		  c->name, instance, nflogstr, markstr,
 		  c->vti_iface == NULL ? "unset" : c->vti_iface,
 		  c->vti_routing ? "yes" : "no",
-		  c->vti_shared ? "yes" : "no",
-		  (c->nic_offload == nic_offload_auto) ? "auto;" :
-		  (c->nic_offload == nic_offload_yes) ? "yes;" : "no;"
+		  c->vti_shared ? "yes" : "no"
+#ifdef USE_NIC_OFFLOAD
+		  ,
+		  (c->nic_offload == nic_offload_auto) ? "auto" :
+		  (c->nic_offload == nic_offload_yes) ? "yes" : "no"
+#endif
 	);
 
 	{
@@ -4126,12 +4153,10 @@ void show_one_connection(const struct connection *c)
 		idtoa(&c->spd.that.id, thatid, sizeof(thatid));
 
 	whack_log(RC_COMMENT,
-		"\"%s\"%s:   our idtype: %s; our id=%s; their idtype: %s; their id:%s",
+		"\"%s\"%s:   our idtype: %s; our id=%s; their idtype: %s; their id=%s",
 		c->name, instance,
-			c->spd.this.id.kind == -3 ? "%fromcert" :
-				enum_name(&ike_idtype_names, c->spd.this.id.kind), thisid,
-			c->spd.that.id.kind == -3 ? "%fromcert" :
-				enum_name(&ike_idtype_names, c->spd.that.id.kind), thatid);
+		enum_name(&ike_idtype_names_extended, c->spd.this.id.kind), thisid,
+		enum_name(&ike_idtype_names_extended, c->spd.that.id.kind), thatid);
 	}
 
 	/* slightly complicated stuff to avoid extra crap */
@@ -4147,16 +4172,18 @@ void show_one_connection(const struct connection *c)
 			 (c->encaps == encaps_yes) ? "yes" : "no",
 			(c->nat_keepalive) ? "yes" : "no",
 			(c->ikev1_natt == natt_both) ? "both" :
-			 (c->ikev1_natt == natt_rfc) ? "rfc" : "drafts"
+			 (c->ikev1_natt == natt_rfc) ? "rfc" :
+			 (c->ikev1_natt == natt_drafts) ? "drafts" : "none"
 			);
 	}
 
 	if (c->extra_debugging != LEMPTY) {
-		whack_log(RC_COMMENT, "\"%s\"%s:   debug: %s",
-			c->name,
-			instance,
-			bitnamesof(debug_bit_names,
-				c->extra_debugging));
+		LSWLOG_WHACK(RC_COMMENT, buf) {
+			lswlogf(buf, "\"%s\"%s:   debug: ",
+				c->name, instance);
+			lswlog_enum_lset_short(buf, &debug_and_impair_names,
+					       c->extra_debugging);
+		}
 	}
 
 	whack_log(RC_COMMENT,
@@ -4322,9 +4349,6 @@ struct connection *eclipsed(const struct connection *c, struct spd_route **esrp 
 
 void liveness_clear_connection(struct connection *c, char *v)
 {
-	libreswan_log("%s: Clearing Connection %s[%lu] %s",v, c->name,
-			c->instance_serial, enum_name(&connection_kind_names,
-				c->kind));
 	/*
 	 * For CK_INSTANCE, delete_states_by_connection() will clear
 	 * Note that delete_states_by_connection changes c->kind but we need
@@ -4336,7 +4360,7 @@ void liveness_clear_connection(struct connection *c, char *v)
 		flush_pending_by_connection(c); /* remove any partial negotiations that are failing */
 		delete_states_by_connection(c, TRUE);
 		DBG(DBG_DPD,
-			DBG_log("%s: unrouting connection %s",
+			DBG_log("%s: unrouting connection %s action - clearing",
 				enum_name(&connection_kind_names,
 					c->kind), v));
 		unroute_connection(c); /* --unroute */
@@ -4370,17 +4394,15 @@ void suppress_delete(struct connection *c)
 void liveness_action(struct connection *c, const bool ikev2)
 {
 	char cib[CONN_INST_BUF];
-	char *ikev = "IKEv1 DPD:";
-
-	if(ikev2)
-		ikev = "IKEv2 liveness:";
+	char *ikev = ikev2 ? "IKEv2 liveness:" : "IKEv1 DPD:";
 
 	fmt_conn_instance(c, cib);
 
 	switch (c->dpd_action) {
 	case DPD_ACTION_CLEAR:
-		libreswan_log("%s action - clearing connection", ikev);
-		liveness_clear_connection(c, "%s action clear");
+		libreswan_log("%s action - clearing connection kind %s", ikev,
+				enum_name(&connection_kind_names, c->kind));
+		liveness_clear_connection(c, ikev);
 		break;
 
 	case DPD_ACTION_RESTART:
@@ -4390,7 +4412,7 @@ void liveness_action(struct connection *c, const bool ikev2)
 		break;
 
 	case DPD_ACTION_HOLD:
-		libreswan_log("%s action - putting connection into %%hold", ikev);
+		libreswan_log("%s action - putting connection into hold", ikev);
 		if (c->kind == CK_INSTANCE) {
 			DBG(DBG_DPD, DBG_log("%s warning dpdaction=hold on instance futile - will be deleted",
 						ikev));
@@ -4401,5 +4423,4 @@ void liveness_action(struct connection *c, const bool ikev2)
 	default:
 		bad_case(c->dpd_action);
 	}
-	return;
 }

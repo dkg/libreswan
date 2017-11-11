@@ -47,6 +47,8 @@ include $(top_srcdir)/mk/config.mk
 
 OBJS =
 
+OBJS += state_db.o
+
 # local (possibly more up to date) copy of <linux/xfrm.h>
 ifeq ($(USE_XFRM_HEADER_COPY),true)
 CFLAGS+=-I ${LIBRESWANSRCDIR}/programs/pluto/linux-copy
@@ -60,9 +62,6 @@ HDRDIRS +=-I${LIBRESWANSRCDIR}/include -I$(LIBRESWANSRCDIR)/lib/libcrypto -I$(KL
 # The following are best left undefined -- each can be overridden at runtime
 # if need be.
 # -DPORT=n sets the default UDP port for IKE messages (otherwise 500)
-# -DDEFAULT_CTLBASE=string overrides /var/run/pluto as default directory
-#    and basename for pluto's lockfile (.pid) and control socket (.ctl).
-#    Double quoting may be needed.
 
 ifeq ($(USE_PFKEYv2),true)
 OBJS += kernel_pfkey.o
@@ -102,8 +101,8 @@ ifeq ($(USE_IPSEC_CONNECTION_LIMIT),true)
 CFLAGS += -DIPSEC_CONNECTION_LIMIT=$(IPSEC_CONNECTION_LIMIT)
 endif
 
-# pam_conv.c is wrapped in #ifdef XAUTH_HAVE_PAM
-OBJS += ikev1_xauth.o addresspool.o pam_conv.o
+OBJS += ikev1_xauth.o addresspool.o
+OBJS += $(call if-enabled, USE_XAUTHPAM, pam_conv.o)
 OBJS += xauth.o
 LDFLAGS += $(XAUTHPAM_LDFLAGS)
 ifneq ($(BUILDENV), darwin)
@@ -170,6 +169,8 @@ LDFLAGS += -lrt
 LDFLAGS += $(UNBOUND_LDFLAGS)
 LDFLAGS += $(LINUX_AUDIT_LDFLAGS)
 
+OBJS += $(call if-enabled, USE_LINUX_AUDIT, linux_audit.o)
+
 LDFLAGS += -levent
 LDFLAGS += -levent_pthreads
 
@@ -202,6 +203,7 @@ OBJS += gcm_test_vectors.o
 OBJS += test_buffer.o
 OBJS += pending.o cookie.o crypto.o defs.o
 OBJS += foodgroups.o log.o state.o plutomain.o plutoalg.o server.o
+OBJS += peerlog.o
 OBJS += state_entry.o
 OBJS += timer.o hmac.o hostpair.o
 OBJS += myid.o ipsec_doi.o
@@ -214,13 +216,13 @@ OBJS += ikev2_rsa.o ikev2_psk.o ikev2_crypto.o
 OBJS += crypt_symkey.o crypt_prf.o ikev1_prf.o ikev2_prf.o
 OBJS += crypt_hash.o
 OBJS += kernel.o
-OBJS += kernel_noklips.o rcv_whack.o pluto_stats.o
+OBJS += kernel_nokernel.o rcv_whack.o pluto_stats.o
 OBJS += demux.o msgdigest.o keys.o
 OBJS += pluto_crypt.o crypt_utils.o crypt_ke.o crypt_dh.o crypt_start_dh.o
 OBJS += rnd.o spdb.o spdb_struct.o
 OBJS += vendor.o nat_traversal.o virtual.o
 OBJS += packet.o pluto_constants.o readwhackmsg.o
-OBJS += nss_cert_load.o pem.o nss_cert_vfy.o
+OBJS += nss_cert_load.o pem.o nss_cert_verify.o
 OBJS += nss_ocsp.o nss_crl_import.o
 OBJS += nss_err.o
 
@@ -230,13 +232,8 @@ OBJS += $(WHACKLIB)
 OBJS += $(IPSECCONFLIB)
 OBJS += $(LIBRESWANLIB)
 
-ifeq ($(USE_SERPENT),true)
 OBJS += $(LIBSERPENT)
-endif
-
-ifeq ($(USE_TWOFISH),true)
 OBJS += $(LIBTWOFISH)
-endif
 
 # legacy mess, something is still needed
 CFLAGS += $(USERLAND_CFLAGS) ${PORTINCLUDE} $(COPTS) $(HDRDIRS) $(NSSFLAGS) ${CROSSFLAGS}

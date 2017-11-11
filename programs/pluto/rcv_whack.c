@@ -28,10 +28,6 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#ifndef HOST_NAME_MAX           /* POSIX 1003.1-2001 says <unistd.h> defines this */
-# define HOST_NAME_MAX  255     /* upper bound, according to SUSv2 */
-#endif
 #include <errno.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -47,7 +43,6 @@
 #include <event2/event.h>
 #include <event2/event_struct.h>
 
-#include "sysdep.h"
 #include "lswconf.h"
 #include "constants.h"
 #include "defs.h"
@@ -65,6 +60,7 @@
 #include "kernel.h"             /* needs connections.h */
 #include "rcv_whack.h"
 #include "log.h"
+#include "peerlog.h"
 #include "lswfips.h"
 #include "keys.h"
 #include "secrets.h"
@@ -74,7 +70,6 @@
 #include "pluto_crypt.h"  /* for pluto_crypto_req & pluto_crypto_req_cont */
 #include "ikev2.h"
 #include "server.h" /* for pluto_seccomp */
-
 #include "kernel_alg.h"
 #include "ike_alg.h"
 
@@ -149,7 +144,7 @@ static void do_whacklisten(void)
 {
 	fflush(stderr);
 	fflush(stdout);
-	close_peerlog();    /* close any open per-peer logs */
+	peerlog_close();    /* close any open per-peer logs */
 #ifdef USE_SYSTEMD_WATCHDOG
         pluto_sd(PLUTO_SD_RELOADING, SD_REPORT_NO_STATUS);
 #endif
@@ -278,16 +273,13 @@ static bool writewhackrecord(char *buf, size_t buflen)
 static bool openwhackrecordfile(char *file)
 {
 	char when[256];
-	char FQDN[HOST_NAME_MAX + 1];
+	char FQDN[SWAN_MAX_DOMAIN_LEN];
 	const u_int32_t magic = WHACK_BASIC_MAGIC;
-	struct tm tm1, *tm;
-	realtime_t n = realnow();
 
 	strcpy(FQDN, "unknown host");
 	gethostname(FQDN, sizeof(FQDN));
 
-	strncpy(whackrecordname, file, sizeof(whackrecordname)-1);
-	whackrecordname[sizeof(whackrecordname)-1] = '\0';	/* ensure NUL termination */
+	jam_str(whackrecordname, sizeof(whackrecordname), file);
 	whackrecordfile = fopen(whackrecordname, "w");
 	if (whackrecordfile == NULL) {
 		libreswan_log("Failed to open whack record file: '%s'",
@@ -295,8 +287,7 @@ static bool openwhackrecordfile(char *file)
 		return FALSE;
 	}
 
-	tm = localtime_r(&n.real_secs, &tm1);
-	strftime(when, sizeof(when), "%F %T", tm);
+	prettynow(when, sizeof(when), "%F %T");
 
 	fprintf(whackrecordfile, "#!-pluto-whack-file- recorded on %s on %s",
 		FQDN, when);
@@ -315,7 +306,8 @@ static bool openwhackrecordfile(char *file)
  */
 void whack_process(int whackfd, const struct whack_message *const m)
 {
-	/* May be needed in future:
+	/*
+	 * May be needed in future:
 	 * const struct lsw_conf_options *oco = lsw_init_options();
 	 */
 	if (m->whack_options) {
@@ -334,10 +326,11 @@ void whack_process(int whackfd, const struct whack_message *const m)
 				 * cause the message to print, it will be printed.
 				 */
 				set_debugging(cur_debugging | m->debugging);
-				DBG(DBG_CONTROL,
-				    DBG_log("base debugging = %s",
-					    bitnamesof(debug_bit_names,
-						       m->debugging)));
+				LSWDBGP(DBG_CONTROL, buf) {
+					lswlogs(buf, "base debugging = ");
+					lswlog_enum_lset_short(buf, &debug_and_impair_names,
+							       m->debugging);
+				}
 				base_debugging = m->debugging;
 				set_debugging(base_debugging);
 			} else if (!m->whack_connection) {
@@ -346,12 +339,12 @@ void whack_process(int whackfd, const struct whack_message *const m)
 
 				if (c != NULL) {
 					c->extra_debugging = m->debugging;
-					DBG(DBG_CONTROL,
-					    DBG_log("\"%s\" extra_debugging = %s",
-						    c->name,
-						    bitnamesof(debug_bit_names,
-							       c->
-							       extra_debugging)));
+					LSWDBGP(DBG_CONTROL, buf) {
+						lswlogf(buf, "\"%s\" extra_debugging = ",
+							c->name);
+						lswlog_enum_lset_short(buf, &debug_and_impair_names,
+								       c->extra_debugging);
+					}
 				}
 			}
 			break;
@@ -440,6 +433,19 @@ void whack_process(int whackfd, const struct whack_message *const m)
 
 	if (m->whack_connection)
 		add_connection(m);
+
+	/* update any socket buffer size before calling listen */
+	if (m->ike_buf_size != 0) {
+		pluto_sock_bufsize = m->ike_buf_size;
+		libreswan_log("Set IKE socket buffer to %d", pluto_sock_bufsize);
+	}
+
+	/* update MSG_ERRQUEUE setting before size before calling listen */
+	if (m->ike_sock_err_toggle) {
+		pluto_sock_errqueue = !pluto_sock_errqueue;
+		libreswan_log("%s IKE socket MSG_ERRQUEUEs",
+			pluto_sock_errqueue ? "Enabling" : "Disabling");
+	}
 
 	/* process "listen" before any operation that could require it */
 	if (m->whack_listen)

@@ -27,14 +27,16 @@ PLUTOOBJS += ike_info.o
 PLUTOOBJS += crypt_symkey.o
 PLUTOOBJS += crypt_hash.o
 PLUTOOBJS += test_buffer.o
-OBJS += $(addprefix $(top_builddir)/programs/pluto/, $(PLUTOOBJS))
+# Need absolute path as 'make' (check dependencies) and 'ld' (do link)
+# are run from different directories.
+OBJS += $(addprefix $(abs_top_builddir)/programs/pluto/, $(PLUTOOBJS))
 # $(PROGRAM): pluto-base
 # .PHONY: pluto-base
 # pluto-base:
 #	$(MAKE) -C $(top_srcdir)/programs/pluto base
 
 OBJS += $(LIBRESWANLIB)
-OBJS += $(LSWLOGLIBS)
+OBJS += $(LSWTOOLLIBS)
 OBJS += $(LIBSERPENT)
 OBJS += $(LIBTWOFISH)
 
@@ -46,5 +48,5 @@ else
 include ../../mk/program.mk
 endif
 
-selfcheck: $(PROGRAM)
+local-selfcheck: $(PROGRAM)
 	$(top_srcdir)/testing/pluto/basic-pluto-00/algparse.sh $(builddir)/$(PROGRAM)

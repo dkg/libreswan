@@ -74,7 +74,7 @@ void ikev2_derive_child_keys(struct state *st, enum original_role role)
 	 * Integrity seed (key).  AEAD, for instance has NULL (no)
 	 * separate integrity.
 	 */
-	const struct integ_desc *integ = ipi->attrs.transattrs.integ;
+	const struct integ_desc *integ = ipi->attrs.transattrs.ta_integ;
 	size_t integ_key_size = (integ != NULL ? integ->integ_keymat_size : 0);
 	/*
 	 * If there is encryption, then ENCKEYLEN contains the
@@ -85,7 +85,7 @@ void ikev2_derive_child_keys(struct state *st, enum original_role role)
 	 * Finally, some encryption algorithms such as AEAD and CTR
 	 * require "salt" as part of the "starting variable".
 	 */
-	const struct encrypt_desc *encrypt = ipi->attrs.transattrs.encrypter;
+	const struct encrypt_desc *encrypt = ipi->attrs.transattrs.ta_encrypt;
 	size_t encrypt_salt_size = (encrypt != NULL ? encrypt->salt_size : 0);
 
 	ipi->keymat_len = integ_key_size + encrypt_key_size + encrypt_salt_size;
@@ -131,7 +131,7 @@ void ikev2_derive_child_keys(struct state *st, enum original_role role)
 		shared = st->st_shared_nss;
 	}
 
-	PK11SymKey *keymat = ikev2_child_sa_keymat(st->st_oakley.prf,
+	PK11SymKey *keymat = ikev2_child_sa_keymat(st->st_oakley.ta_prf,
 						   st->st_skey_d_nss,
 						   shared, ni, nr,
 						   ipi->keymat_len * 2);

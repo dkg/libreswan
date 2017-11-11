@@ -9,34 +9,31 @@ enum ike_alg_key;
 
 /*
  * More meaningful passert.
+ *
+ * Do not wrap ASSERTION in parenthesis as it will suppress the
+ * warning for 'foo = bar'.
  */
 #define passert_ike_alg(ALG, ASSERTION) {				\
-		bool __assertion = (ASSERTION);				\
-		if (!__assertion) {					\
-			PASSERT_FAIL("algorithm '%s' fails: %s",	\
+		/* wrapping ASSERTION in paren suppresses -Wparen */	\
+		bool assertion__ = ASSERTION; /* no paren */		\
+		if (!assertion__) {					\
+			PASSERT_FAIL("IKE_ALG %s algorithm '%s' fails: %s", \
+				     ike_alg_type_name((ALG)->algo_type), \
 				     (ALG)->fqn != NULL ? (ALG)->fqn	\
 				     : (ALG)->name != NULL ? (ALG)->name \
-				     : "???", #ASSERTION);		\
+				     : "NULL", #ASSERTION);		\
 		}							\
 	}
 
 #define pexpect_ike_alg(ALG, ASSERTION) {				\
-		bool __assertion = (ASSERTION);				\
-		if (!__assertion) {					\
-			PEXPECT_LOG("algorithm '%s' fails: %s",		\
+		/* wrapping ASSERTION in paren suppresses -Wparen */	\
+		bool assertion__ = ASSERTION; /* no paren */		\
+		if (!assertion__) {					\
+			PEXPECT_LOG("IKE_ALG %s algorithm '%s' fails: %s", \
+				    ike_alg_type_name((ALG)->algo_type), \
 				    (ALG)->fqn != NULL ? (ALG)->fqn	\
 				    : (ALG)->name != NULL ? (ALG)->name \
-				    : "???", #ASSERTION);		\
-		}							\
-	}
-
-#define pdebug_ike_alg(ALG, ASSERTION) {				\
-		bool __assertion = (ASSERTION);				\
-		if (!__assertion) {					\
-			DBG_log("algorithm '%s' fails: %s",		\
-				    (ALG)->fqn != NULL ? (ALG)->fqn	\
-				    : (ALG)->name != NULL ? (ALG)->name \
-				    : "???", #ASSERTION);		\
+				    : "NULL", #ASSERTION);		\
 		}							\
 	}
 
@@ -73,9 +70,10 @@ enum ike_alg_key {
 	IKEv1_OAKLEY_ID,
 	IKEv1_ESP_ID,
 	IKEv2_ALG_ID,
+
+	IKE_ALG_KEY_ROOF,
+	IKE_ALG_KEY_FLOOR = IKEv1_OAKLEY_ID
 };
-#define IKE_ALG_KEY_FLOOR (IKEv1_OAKLEY_ID)
-#define IKE_ALG_KEY_ROOF (IKEv2_ALG_ID+1)
 
 /*
  * User friendly string representing the key (protocol family).
@@ -218,6 +216,9 @@ struct ike_alg {
 	 * Macros provide short term aliases for the slightly longer
 	 * index references (tacky, unixish, and delay churning the
 	 * code).
+	 *
+	 * -1 indicates not valid (annoyingly 0 is used by IKEv2 for
+	 * NULL integrity).
 	 */
 	const struct ike_alg_type *algo_type;
 #define ikev1_oakley_id id[IKEv1_OAKLEY_ID]
@@ -534,6 +535,19 @@ struct integ_desc {
 	 */
 	const size_t integ_output_size;
 	/*
+	 * IKEv1 IPsec AH transform values
+	 * http://www.iana.org/assignments/isakmp-registry/isakmp-registry.xhtml#isakmp-registry-7
+	 *
+	 * An IKEv1 AH proposal is structured as:
+	 *
+	 *     Transform: ikev1_ah_transform
+	 *         Attribute: ikev1_auth_attribute
+	 *
+	 * Where the attrid and transid need to match.  Other than for
+	 * an MD5 edge case, this is entirely redundant.
+	 */
+	enum ipsec_authentication_algo integ_ikev1_ah_transform;
+	/*
 	 * For IKE.  The PRF implementing integrity.  The output is
 	 * truncated down to INTEG_HASH_LEN.
 	 *
@@ -585,8 +599,9 @@ bool ike_alg_is_valid(const struct ike_alg *alg);
 bool encrypt_has_key_bit_length(const struct encrypt_desc *encrypt_desc, unsigned keylen);
 
 /*
- * The largest key size allowed.
+ * The largest and smallest key bit length allowed.
  */
+unsigned encrypt_min_key_bit_length(const struct encrypt_desc *encrypt_desc);
 unsigned encrypt_max_key_bit_length(const struct encrypt_desc *encrypt_desc);
 
 /*

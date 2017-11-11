@@ -196,7 +196,7 @@ static void aggr_inI1_outR1_continue1(struct pluto_crypto_req_cont *ke,
 
 		e = start_dh_secretiv(dh, st, st->st_import,
 				      ORIGINAL_RESPONDER,
-				      st->st_oakley.group);
+				      st->st_oakley.ta_dh);
 
 		if (e != STF_SUSPEND) {
 			passert(dh->pcrc_md != NULL);
@@ -326,7 +326,7 @@ stf_status aggr_inI1_outR1(struct msg_digest *md)
 		libreswan_log("responding to Aggressive Mode, state #%lu, connection \"%s\"%s from %s",
 			st->st_serialno,
 			st->st_connection->name, fmt_conn_instance(st->st_connection, cib),
-			ipstr(&c->spd.that.host_addr, &b));
+			log_ip ? ipstr(&c->spd.that.host_addr, &b) : "<ip address>");
 	}
 
 	merge_quirks(st, md);
@@ -360,7 +360,7 @@ stf_status aggr_inI1_outR1(struct msg_digest *md)
 	}
 
 	/* KE in */
-	RETURN_STF_FAILURE(accept_KE(&st->st_gi, "Gi", st->st_oakley.group,
+	RETURN_STF_FAILURE(accept_KE(&st->st_gi, "Gi", st->st_oakley.ta_dh,
 				     &md->chain[ISAKMP_NEXT_KE]->pbs));
 
 	/* Ni in */
@@ -373,7 +373,7 @@ stf_status aggr_inI1_outR1(struct msg_digest *md)
 			"outI2 KE",
 			st, md);
 
-		return build_ke_and_nonce(ke, st->st_oakley.group,
+		return build_ke_and_nonce(ke, st->st_oakley.ta_dh,
 				st->st_import);
 	}
 }
@@ -690,7 +690,7 @@ stf_status aggr_inR1_outI2(struct msg_digest *md)
 	set_nat_traversal(st, md);
 
 	/* KE in */
-	RETURN_STF_FAILURE(accept_KE(&st->st_gr, "Gr", st->st_oakley.group,
+	RETURN_STF_FAILURE(accept_KE(&st->st_gr, "Gr", st->st_oakley.ta_dh,
 				     &md->chain[ISAKMP_NEXT_KE]->pbs));
 
 	/* Ni in */
@@ -711,7 +711,7 @@ stf_status aggr_inR1_outI2(struct msg_digest *md)
 
 		return start_dh_secretiv(dh, st, st->st_import,
 					 ORIGINAL_INITIATOR,
-					 st->st_oakley.group);
+					 st->st_oakley.ta_dh);
 	}
 }
 
@@ -1251,7 +1251,7 @@ stf_status aggr_outI1(int whack_sock,
 
 		ke = new_pcrc(aggr_outI1_continue, "aggr_outI1 KE + nonce",
 			st, fake_md);
-		e = build_ke_and_nonce(ke, st->st_oakley.group, importance);
+		e = build_ke_and_nonce(ke, st->st_oakley.ta_dh, importance);
 
 		/*
 		 * ??? what exactly do we expect for e?
@@ -1365,10 +1365,12 @@ static stf_status aggr_outI1_tail(struct pluto_crypto_req_cont *ke,
 	if (c->spd.this.xauth_client || c->spd.this.xauth_server)
 		numvidtosend++;
 
-	if (nat_traversal_enabled)
+	if (nat_traversal_enabled && c->ikev1_natt != natt_none)
 		numvidtosend++;
+
 	if (c->cisco_unity)
 		numvidtosend++;
+
 	if (c->fake_strongswan)
 		numvidtosend++;
 
@@ -1385,13 +1387,15 @@ static stf_status aggr_outI1_tail(struct pluto_crypto_req_cont *ke,
 			return STF_INTERNAL_ERROR;
 	}
 
-	if (nat_traversal_enabled) {
+	if (nat_traversal_enabled && c->ikev1_natt != natt_none) {
 		int np = --numvidtosend > 0 ? ISAKMP_NEXT_VID : ISAKMP_NEXT_NONE;
 
 		if (!nat_traversal_insert_vid(np, &md->rbody, st)) {
 			reset_cur_state();
 			return STF_INTERNAL_ERROR;
 		}
+	} else {
+		DBG(DBG_NATT, DBG_log("not sending any NATT VID's"));
 	}
 
 	if (c->spd.this.xauth_client || c->spd.this.xauth_server) {

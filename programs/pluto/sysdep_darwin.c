@@ -52,7 +52,7 @@
 #include "kernel.h"
 #include "kernel_netlink.h"
 #include "kernel_pfkey.h"
-#include "kernel_noklips.h"
+#include "kernel_nokernel.h"
 #include "packet.h"
 #include "x509.h"
 #include "log.h"
@@ -96,22 +96,18 @@
  * They are useful for adjusting a firewall.
  */
 
-#ifndef DEFAULT_UPDOWN
-# define DEFAULT_UPDOWN "ipsec _updown"
-#endif
-
 static const char *pluto_ifn[10];
 static int pluto_ifn_roof = 0;
 
 struct raw_iface *find_raw_ifaces4(void)
 {
-	static const int on = TRUE;	/* by-reference parameter; constant, we hope */
 	int j;	/* index into buf */
 	struct ifconf ifconf;
 	struct ifreq *buf = NULL;	/* for list of interfaces -- arbitrary limit */
 	struct ifreq *bp;	/* cursor into buf */
 	struct raw_iface *rifaces = NULL;
 	int master_sock = safe_socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP);        /* Get a UDP socket */
+	static const int on = TRUE;     /* by-reference parameter; constant, we hope */
 
 	/*
 	 * Current upper bound on number of interfaces.
@@ -125,9 +121,13 @@ struct raw_iface *find_raw_ifaces4(void)
 	if (master_sock == -1)
 		EXIT_LOG_ERRNO(errno, "socket() failed in find_raw_ifaces4()");
 
+	/*
+	 * Without SO_REUSEADDR, bind() of master_sock will cause
+	 * 'address already in use?
+	 */
 	if (setsockopt(master_sock, SOL_SOCKET, SO_REUSEADDR,
-		       (const void *)&on, sizeof(on)) < 0)
-		EXIT_LOG_ERRNO(errno, "setsockopt() in find_raw_ifaces4()");
+			(const void *)&on, sizeof(on)) < 0)
+		EXIT_LOG_ERRNO(errno, "setsockopt(SO_REUSEADDR) in find_raw_ifaces4()");
 
 	/* bind the socket */
 	{
@@ -185,7 +185,11 @@ struct raw_iface *find_raw_ifaces4(void)
 		if (rs->sin_family != AF_INET)
 			continue; /* not interesting */
 
-		/* build a NUL-terminated copy of the rname field */
+		/* build a NUL-terminated copy of the rname field
+		 * Note
+		 * - BSD might have IFNAMSIZ characters in a name
+		 * - struct raw_interface allows more than IFNAMSIZ bytes
+		 */
 		memcpy(ri.name, bp->ifr_name, IFNAMSIZ);
 		ri.name[IFNAMSIZ] = '\0';
 
@@ -203,6 +207,7 @@ struct raw_iface *find_raw_ifaces4(void)
 		/* Find out stuff about this interface.  See netdevice(7). */
 		zero(&auxinfo); /* paranoia */
 		memcpy(auxinfo.ifr_name, bp->ifr_name, IFNAMSIZ);
+		/* auxinfo.ifr_name[IFNAMSIZ] already '\0' */
 		if (ioctl(master_sock, SIOCGIFFLAGS, &auxinfo) == -1) {
 			EXIT_LOG_ERRNO(errno,
 				       "ioctl(SIOCGIFFLAGS) for %s in find_raw_ifaces4()",

@@ -14,6 +14,7 @@
  * Copyright (C) 2013 David McCullough <ucdevel@gmail.com>
  * Copyright (C) 2013 Matt Rogers <mrogers@redhat.com>
  * Copyright (C) 2013-2017 Antony Antony <antony@phenome.org>
+ * Copyright (C) 2017 Sahana Prasad <sahana.prasad07@gmail.com>
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -50,6 +51,7 @@
 #include "defs.h"
 #include "whack.h"
 
+#include "ipsecconf/confread.h" /* for DEFAULT_UPDOWN */
 #include <net/if.h> /* for IFNAMSIZ */
 /*
  * Print the 'ipsec --whack help' message
@@ -59,7 +61,7 @@ static void help(void)
 	fprintf(stderr,
 		"Usage:\n"
 		"\n"
-		"all forms: [--ctlbase <path>] [--label <string>]\n"
+		"all forms: [--rundir <path>] [--ctlsocket <file>] [--label <string>]\n"
 		"\n"
 		"help: whack [--help] [--version]\n"
 		"\n"
@@ -110,7 +112,7 @@ static void help(void)
 		"	[--labeledipsec] [--policylabel <label>] \\\n"
 #endif
 		"	[--xauthby file|pam|alwaysok] [--xauthfail hard|soft] \\\n"
-		"	[--dontrekey] [--aggrmode] \\\n"
+		"	[--dontrekey] [--aggressive] \\\n"
 		"	[--initialcontact] [--cisco-unity] [--fake-strongswan] \\\n"
 		"	[--encaps <auto|yes|no>] [--no-nat-keepalive] \\\n"
 		"	[--ikev1natt <both|rfc|drafts> \\\n"
@@ -155,6 +157,7 @@ static void help(void)
 		"myid: whack --myid <id>\n"
 		"\n"
 		"debug: whack [--name <connection_name>] \\\n"
+		"	[--debug <class>] | \\\n"
 		"	[--debug-none] | [--debug-all] | \\\n"
 		"	( [--debug-raw] [--debug-crypt] [--debug-parsing] \\\n"
 		"	[--debug-emitting] [--debug-control] [--debug-controlmore] \\\n"
@@ -166,6 +169,9 @@ static void help(void)
 		"testcases: [--whackrecord <file>] [--whackstoprecord]\n"
 		"\n"
 		"listen: whack (--listen | --unlisten)\n"
+		"\n"
+		"socket buffers: whack --ike-socket-bufsize <bufsize>\n"
+		"socket errqueue: whack --ike-socket-errqueue-toggle\n"
 		"\n"
 		"ddos-protection: whack (--ddos-busy | --ddos-unlimited | \\\n"
 		"	--ddos-auto)\n"
@@ -252,8 +258,9 @@ static void diagq(err_t ugh, const char *this)
  * - CD_* options (Connection Description options)
  */
 enum option_enums {
-#   define OPT_FIRST1    OPT_CTLBASE	/* first normal option, range 1 */
-	OPT_CTLBASE,
+#   define OPT_FIRST1    OPT_RUNDIR	/* first normal option, range 1 */
+	OPT_RUNDIR,
+	OPT_CTLSOCKET,
 	OPT_NAME,
 	OPT_REMOTE_HOST,
 	OPT_CONNALIAS,
@@ -277,6 +284,8 @@ enum option_enums {
 	OPT_DELETEUSER,
 	OPT_LISTEN,
 	OPT_UNLISTEN,
+	OPT_IKEBUF,
+	OPT_IKE_MSGERR,
 
 	OPT_DDOS_BUSY,
 	OPT_DDOS_UNLIMITED,
@@ -459,7 +468,10 @@ enum option_enums {
 
 	DBGOPT_LAST = DBGOPT_elems + IMPAIR_roof_IX - 1,
 
-#define	OPTION_ENUMS_LAST	DBGOPT_LAST
+	DBGOPT_DEBUG,
+	DBGOPT_IMPAIR,
+
+#define	OPTION_ENUMS_LAST	DBGOPT_IMPAIR
 };
 
 /*
@@ -480,7 +492,9 @@ static const struct option long_opts[] = {
 	{ "version", no_argument, NULL, 'v' },
 	{ "label", required_argument, NULL, 'l' },
 
-	{ "ctlbase", required_argument, NULL, OPT_CTLBASE + OO },
+	{ "rundir", required_argument, NULL, OPT_RUNDIR + OO },
+	{ "ctlbase", required_argument, NULL, OPT_RUNDIR + OO }, /* backwards compat */
+	{ "ctlsocket", required_argument, NULL, OPT_CTLSOCKET + OO },
 	{ "name", required_argument, NULL, OPT_NAME + OO },
 	{ "remote-host", required_argument, NULL, OPT_REMOTE_HOST + OO },
 	{ "connalias", required_argument, NULL, OPT_CONNALIAS + OO },
@@ -504,6 +518,8 @@ static const struct option long_opts[] = {
 	{ "crash", required_argument, NULL, OPT_DELETECRASH + OO },
 	{ "listen", no_argument, NULL, OPT_LISTEN + OO },
 	{ "unlisten", no_argument, NULL, OPT_UNLISTEN + OO },
+	{ "ike-socket-bufsize", required_argument, NULL, OPT_IKEBUF + OO + NUMERIC_ARG},
+	{ "ike-socket-errqueue-toggle", no_argument, NULL, OPT_IKE_MSGERR + OO },
 
 	{ "ddos-busy", no_argument, NULL, OPT_DDOS_BUSY + OO },
 	{ "ddos-unlimited", no_argument, NULL, OPT_DDOS_UNLIMITED + OO },
@@ -588,7 +604,8 @@ static const struct option long_opts[] = {
 	{ "tunnelipv6", no_argument, NULL, CD_TUNNELIPV6 + OO },
 	PS("pfs", PFS),
 	{ "sha2_truncbug", no_argument, NULL, CD_SHA2_TRUNCBUG + OO },
-	PS("aggrmode", AGGRESSIVE),
+	PS("aggressive", AGGRESSIVE),
+	PS("aggrmode", AGGRESSIVE), /*  backwards compatibility */
 
 	PS("disablearrivalcheck", DISABLEARRIVALCHECK),
 
@@ -683,8 +700,9 @@ static const struct option long_opts[] = {
 	PS("ikev2-propose", IKEV2_PROPOSE),
 
 	PS("allow-narrowing", IKEV2_ALLOW_NARROWING),
+#ifdef XAUTH_HAVE_PAM
 	PS("ikev2-pam-authorize", IKEV2_PAM_AUTHORIZE),
-
+#endif
 	PS("sareftrack", SAREF_TRACK),
 	PS("sarefconntrack", SAREF_TRACK_CONNTRACK),
 
@@ -708,7 +726,7 @@ static const struct option long_opts[] = {
 	{ "debug-none", no_argument, NULL, DBGOPT_NONE + OO },
 	{ "debug-all", no_argument, NULL, DBGOPT_ALL + OO },
 
-#    define DO (DBGOPT_ALL + OO + 1)
+#    define DO (DBGOPT_elems + OO)
 
 	{ "debug-raw", no_argument, NULL, DBG_RAW_IX + DO },
 	{ "debug-crypt", no_argument, NULL, DBG_CRYPT_IX + DO },
@@ -734,38 +752,9 @@ static const struct option long_opts[] = {
 	{ "debug-dpd",     no_argument, NULL, DBG_DPD_IX + DO },
 	{ "debug-private", no_argument, NULL, DBG_PRIVATE_IX + DO },
 
-	{ "impair-bust-mi2", no_argument, NULL, IMPAIR_BUST_MI2_IX + DO },
-	{ "impair-bust-mr2", no_argument, NULL, IMPAIR_BUST_MR2_IX + DO },
-	{ "impair-sa-fail",    no_argument, NULL, IMPAIR_SA_CREATION_IX + DO },
-	{ "impair-die-oninfo", no_argument, NULL, IMPAIR_DIE_ONINFO_IX  + DO },
-	{ "impair-jacob-two-two", no_argument, NULL,
-		IMPAIR_JACOB_TWO_TWO_IX + DO },
-	{ "impair-major-version-bump", no_argument, NULL,
-		IMPAIR_MAJOR_VERSION_BUMP_IX + DO },
-	{ "impair-minor-version-bump", no_argument, NULL,
-		IMPAIR_MINOR_VERSION_BUMP_IX + DO },
-	{ "impair-retransmits", no_argument, NULL,
-		IMPAIR_RETRANSMITS_IX + DO },
-	{ "impair-send-bogus-payload-flag", no_argument, NULL,
-		IMPAIR_SEND_BOGUS_PAYLOAD_FLAG_IX + DO },
-	{ "impair-send-bogus-isakmp-flag", no_argument, NULL,
-		IMPAIR_SEND_BOGUS_ISAKMP_FLAG_IX + DO },
-	{ "impair-send-ikev2-ke", no_argument, NULL,
-		IMPAIR_SEND_IKEv2_KE_IX + DO },
-	{ "impair-send-no-delete", no_argument, NULL,
-		IMPAIR_SEND_NO_DELETE_IX + DO },
-	{ "impair-send-no-ikev2-auth", no_argument, NULL,
-		IMPAIR_SEND_NO_IKEV2_AUTH_IX + DO },
-	/*
-	 * impair-force-fips cannot be used with whack,
-	 * it needs to be passed as daemon option to pluto
-	 */
-	{ "impair-send-key-size-check", no_argument, NULL,
-		IMPAIR_SEND_KEY_SIZE_CHECK_IX + DO },
-	{ "impair-send-zero-gx", no_argument, NULL,
-		IMPAIR_SEND_ZERO_GX_IX + DO },
-	{ "impair-send-bogus-dcookie", no_argument, NULL,
-		IMPAIR_SEND_BOGUS_DCOOKIE_IX + DO },
+	{ "debug", required_argument, NULL, DBGOPT_DEBUG + OO, },
+	{ "impair", required_argument, NULL, DBGOPT_IMPAIR + OO, },
+
 #    undef DO
 	{ "whackrecord",     required_argument, NULL, OPT_WHACKRECORD + OO },
 	{ "whackstoprecord", no_argument, NULL, OPT_WHACKSTOPRECORD + OO },
@@ -775,7 +764,7 @@ static const struct option long_opts[] = {
 
 struct sockaddr_un ctl_addr = {
 	.sun_family = AF_UNIX,
-	.sun_path   = DEFAULT_CTLBASE CTL_SUFFIX,
+	.sun_path   = DEFAULT_CTL_SOCKET,
 #if defined(HAS_SUN_LEN)
 	.sun_len = sizeof(struct sockaddr_un),
 #endif
@@ -959,6 +948,9 @@ int main(int argc, char **argv)
 	msg.addr_family = AF_INET;
 	msg.tunnel_addr_family = AF_INET;
 
+	msg.right.updown = DEFAULT_UPDOWN;
+	msg.left.updown = DEFAULT_UPDOWN;
+
 	for (;;) {
 		int long_index;
 		/* numeric argument for some flags */
@@ -1113,11 +1105,19 @@ int main(int argc, char **argv)
 
 		/* the rest of the options combine in complex ways */
 
-		case OPT_CTLBASE:	/* --port <ctlbase> */
+		case OPT_RUNDIR:	/* --rundir <dir> */
 			if (snprintf(ctl_addr.sun_path,
 				     sizeof(ctl_addr.sun_path),
-				     "%s%s", optarg, CTL_SUFFIX) == -1)
-				diag("<ctlbase>" CTL_SUFFIX " must be fit in a sun_addr");
+				     "%s/pluto.ctl", optarg) == -1)
+				diag("Invalid rundir for sun_addr");
+
+			continue;
+
+		case OPT_CTLSOCKET:	/* --ctlsocket <file> */
+			if (snprintf(ctl_addr.sun_path,
+				     sizeof(ctl_addr.sun_path),
+				     "%s", optarg) == -1)
+				diag("Invalid ctlsocket for sun_addr");
 
 			continue;
 
@@ -1134,6 +1134,20 @@ int main(int argc, char **argv)
 		case OPT_KEYID:	/* --keyid <identity> */
 			msg.whack_key = TRUE;
 			msg.keyid = optarg;	/* decoded by Pluto */
+			continue;
+
+		case OPT_IKEBUF:	/* --ike-socket-bufsize <bufsize> */
+			if (opt_whole < 1500) {
+				diag("Ignoring extremely unwise IKE buffer size choice");
+			} else {
+				msg.ike_buf_size = opt_whole;
+				msg.whack_listen = TRUE;
+			}
+			continue;
+
+		case OPT_IKE_MSGERR:	/* --ike-socket-errqueue-toggle */
+			msg.ike_sock_err_toggle = TRUE;
+			msg.whack_listen = TRUE;
 			continue;
 
 		case OPT_MYID:	/* --myid <identity> */
@@ -1927,7 +1941,7 @@ int main(int argc, char **argv)
 			continue;
 
 		case CD_VTI_IFACE:      /* --vti-iface */
-			if (optarg != NULL && strlen(optarg) <= IFNAMSIZ)
+			if (optarg != NULL && strlen(optarg) < IFNAMSIZ)
 				msg.vti_iface = strdup(optarg);
 			else
 				fprintf(stderr, "whack: invalid interface name '%s' ignored\n",
@@ -1941,12 +1955,14 @@ int main(int argc, char **argv)
 			continue;
 
 		case CD_XAUTHBY:
-			if (streq(optarg, "pam")) {
-				msg.xauthby = XAUTHBY_PAM;
-				continue;
-			} else if (streq(optarg, "file")) {
+			if (streq(optarg, "file")) {
 				msg.xauthby = XAUTHBY_FILE;
 				continue;
+#ifdef XAUTH_HAVE_PAM
+			} else if (streq(optarg, "pam")) {
+				msg.xauthby = XAUTHBY_PAM;
+				continue;
+#endif
 			} else if (streq(optarg, "alwaysok")) {
 				msg.xauthby = XAUTHBY_ALWAYSOK;
 				continue;
@@ -2038,6 +2054,33 @@ int main(int argc, char **argv)
 			/* note: does not include PRIVATE */
 			msg.debugging |= DBG_ALL;
 			continue;
+
+		case DBGOPT_DEBUG:
+		{
+			int ix = enum_match(&debug_names, optarg);
+			if (ix < 0) {
+				fprintf(stderr, "whack: unrecognized --debug '%s' option ignored",
+					optarg);
+			} else {
+				msg.debugging |= LELEM(ix);
+			}
+			continue;
+		}
+
+		case DBGOPT_IMPAIR:
+		{
+			int ix = enum_match(&impair_names, optarg);
+			if (ix < 0) {
+				fprintf(stderr, "whack: unrecognized --impair '%s' option; ignored",
+					optarg);
+			} else if (ix == IMPAIR_FORCE_FIPS_IX) {
+				fprintf(stderr, "whack: invalid --impair '%s' option; must be passed directly to pluto",
+					optarg);
+			} else {
+				msg.debugging |= LELEM(ix);
+			}
+			continue;
+		}
 
 		default:
 			/* DBG_* or IMPAIR_* flags */
@@ -2172,7 +2215,7 @@ int main(int argc, char **argv)
 	      msg.whack_initiate || msg.whack_oppo_initiate ||
 	      msg.whack_terminate ||
 	      msg.whack_route || msg.whack_unroute || msg.whack_listen ||
-	      msg.whack_unlisten || msg.whack_list ||
+	      msg.whack_unlisten || msg.whack_list || msg.ike_buf_size ||
 	      msg.whack_ddos != DDOS_undefined ||
 	      msg.whack_reread || msg.whack_crash || msg.whack_shunt_status ||
 	      msg.whack_status || msg.whack_global_status || msg.whack_traffic_status ||

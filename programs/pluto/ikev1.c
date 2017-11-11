@@ -229,7 +229,7 @@ static state_transition_fn      /* forward declaration */
  */
 
 static const struct state_microcode
-	*ike_microcode_index[STATE_IKE_ROOF - STATE_IKE_FLOOR];
+	*ike_microcode_index[STATE_IKEv1_ROOF - STATE_IKE_FLOOR];
 
 static const struct state_microcode v1_state_microcode_table[] = {
 
@@ -520,7 +520,7 @@ static const struct state_microcode v1_state_microcode_table[] = {
 	{ STATE_XAUTH_R0, STATE_XAUTH_R1,
 	  SMF_ALL_AUTH | SMF_ENCRYPTED,
 	  P(MCFG_ATTR) | P(HASH), P(VID), PT(NONE),
-	  EVENT_NULL, xauth_inR0 }, /*Re-transmit may be done by previous state*/
+	  EVENT_NULL, xauth_inR0 }, /* Re-transmit may be done by previous state */
 
 	{ STATE_XAUTH_R1, STATE_MAIN_R3,
 	  SMF_ALL_AUTH | SMF_ENCRYPTED,
@@ -596,7 +596,7 @@ void init_ikev1(void)
 	for (t = &v1_state_microcode_table[elemsof(v1_state_microcode_table) - 1];;)
 	{
 		passert(STATE_IKE_FLOOR <= t->state &&
-			t->state < STATE_IKE_ROOF);
+			t->state < STATE_IKEv1_ROOF);
 		ike_microcode_index[t->state - STATE_IKE_FLOOR] = t;
 		if (t == v1_state_microcode_table)
 			break;
@@ -1185,7 +1185,7 @@ void process_v1_packet(struct msg_digest **mdp)
 
 		if (st == NULL) {
 			DBG(DBG_CONTROL, DBG_log(
-				"No appropriate Mode Config state yet.See if we have a Main Mode state"));
+				"No appropriate Mode Config state yet. See if we have a Main Mode state"));
 			/* No appropriate Mode Config state.
 			 * See if we have a Main Mode state.
 			 * ??? what if this is a duplicate of another message?
@@ -1423,7 +1423,7 @@ void process_v1_packet(struct msg_digest **mdp)
 #endif
 
 		/* Add the fragment to the state */
-		i = &st->ike_frags;
+		i = &st->st_v1_rfrags;
 		for (;;) {
 			if (ike_frag != NULL) {
 				/* Still looking for a place to insert ike_frag */
@@ -1459,7 +1459,7 @@ void process_v1_packet(struct msg_digest **mdp)
 			int prev_index = 0;
 			struct ike_frag *frag;
 
-			for (frag = st->ike_frags; frag; frag = frag->next) {
+			for (frag = st->st_v1_rfrags; frag; frag = frag->next) {
 				size += frag->size;
 				if (frag->index != ++prev_index) {
 					break; /* fragment list incomplete */
@@ -1475,7 +1475,7 @@ void process_v1_packet(struct msg_digest **mdp)
 						frag->md->sender_port;
 
 					/* Reassemble fragments in buffer */
-					frag = st->ike_frags;
+					frag = st->st_v1_rfrags;
 					while (frag != NULL &&
 					       frag->index <= last_frag_index)
 					{
@@ -1512,7 +1512,7 @@ void process_v1_packet(struct msg_digest **mdp)
 	 * Look up the appropriate microcode based on state and
 	 * possibly Oakley Auth type.
 	 */
-	passert(STATE_IKE_FLOOR <= from_state && from_state <= STATE_IKE_ROOF);
+	passert(STATE_IKE_FLOOR <= from_state && from_state <= STATE_IKEv1_ROOF);
 	smc = ike_microcode_index[from_state - STATE_IKE_FLOOR];
 
 	if (st != NULL) {
@@ -1651,8 +1651,7 @@ void process_packet_tail(struct msg_digest **mdp)
 		DBG(DBG_CRYPT,
 		    DBG_log("decrypting %u bytes using algorithm %s",
 			    (unsigned) pbs_left(&md->message_pbs),
-			    enum_show(&oakley_enc_names,
-				      st->st_oakley.encrypt)));
+			    st->st_oakley.ta_encrypt->common.fqn));
 
 		/* do the specified decryption
 		 *
@@ -1670,7 +1669,7 @@ void process_packet_tail(struct msg_digest **mdp)
 		 * the last phase 1 block, not the last block sent.
 		 */
 		{
-			const struct encrypt_desc *e = st->st_oakley.encrypter;
+			const struct encrypt_desc *e = st->st_oakley.ta_encrypt;
 
 			if (pbs_left(&md->message_pbs) % e->enc_blocksize != 0)
 			{
@@ -2221,9 +2220,9 @@ void complete_v1_state_transition(struct msg_digest **mdp, stf_status result)
 		/* advance the state */
 		const struct state_microcode *smc = md->smc;
 
-		libreswan_log("transition from state %s to state %s",
-			      enum_name(&state_names, from_state),
-			      enum_name(&state_names, smc->next_state));
+		DBG(DBG_CONTROL, DBG_log("doing_xauth:%s, t_xauth_client_done:%s",
+			st->st_oakley.doing_xauth ? "yes" : "no",
+			st->hidden_variables.st_xauth_client_done ? "yes" : "no"));
 
 		/* accept info from VID because we accept this message */
 
@@ -2264,29 +2263,44 @@ void complete_v1_state_transition(struct msg_digest **mdp, stf_status result)
 			st->st_msgid_reserved = TRUE;
 		}
 
+		DBG(DBG_CONTROL, DBG_log("IKEv1: transition from state %s to state %s",
+			      enum_name(&state_names, from_state),
+			      enum_name(&state_names, smc->next_state)));
+
 		change_state(st, smc->next_state);
 
-		/* XAUTH negotiation withOUT modecfg ends in STATE_XAUTH_I1
-		 * which is wrong and creates issues further in several places
-		 * As per libreswan design, it seems every phase 1 negotiation
-		 * including xauth/modecfg must end with STATE_MAIN_I4 to mark
-		 * actual end of phase 1. With modecfg, negotiation ends with
-		 * STATE_MAIN_I4 already.
+		/*
+		 * XAUTH negotiation without ModeCFG cannot follow the regular
+		 * state machine change as it cannot be determined if the CFG
+		 * payload is "XAUTH OK, no ModeCFG" or "XAUTH OK, expect
+		 * ModeCFG". To the smc, these two cases look identical. So we
+		 * have an ad hoc state change here for the case where
+		 * we have XAUTH but not ModeCFG. We move it to the established
+		 * state, so the regular state machine picks up the Quick Mode.
 		 */
-#if 0	/* ??? what's this code for? */
 		if (st->st_connection->spd.this.xauth_client
 		    && st->hidden_variables.st_xauth_client_done
 		    && !st->st_connection->spd.this.modecfg_client
-		    && st->st_state == STATE_XAUTH_I1) {
-			DBG(DBG_CONTROL,
-				DBG_log("As XAUTH is done and modecfg is not configured, so Phase 1 neogtiation finishes successfully"));
-			change_state(st, STATE_MAIN_I4);
+		    && st->st_state == STATE_XAUTH_I1)
+		{
+			bool aggrmode = LHAS(st->st_connection->policy, POLICY_AGGRESSIVE_IX);
+
+			libreswan_log("XAUTH completed; ModeCFG skipped as per configuration");
+			change_state(st, aggrmode ? STATE_AGGR_I2 : STATE_MAIN_I4);
+			st->st_msgid_phase15 = v1_MAINMODE_MSGID;
 		}
-#endif
 
 		/* Schedule for whatever timeout is specified */
 		if (!md->event_already_set) {
-			/* Delete previous retransmission event.
+			/*
+			 * This md variable is hardly ever set.
+			 * Only deals with v1 <-> v2 switching
+			 * which will be removed in the near future anyway
+			 * (PW 2017 Oct 8)
+			 */
+			DBG(DBG_CONTROL, DBG_log("event_already_set, deleting event"));
+			/*
+			 * Delete previous retransmission event.
 			 * New event will be scheduled below.
 			 */
 			delete_event(st);
@@ -2304,7 +2318,7 @@ void complete_v1_state_transition(struct msg_digest **mdp, stf_status result)
 		/* in aggressive mode, there will be no reply packet in transition
 		 * from STATE_AGGR_R1 to STATE_AGGR_R2
 		 */
-		if (nat_traversal_enabled) {
+		if (nat_traversal_enabled && st->st_connection->ikev1_natt != natt_none) {
 			/* adjust our destination port if necessary */
 			nat_traversal_change_port_lookup(md, st);
 		}
@@ -2321,16 +2335,35 @@ void complete_v1_state_transition(struct msg_digest **mdp, stf_status result)
 
 			close_output_pbs(&reply_stream); /* good form, but actually a no-op */
 
-			record_and_send_ike_msg(st, &reply_stream,
-				enum_name(&state_names, from_state));
+			if (st->st_state == STATE_MAIN_R2 &&
+				DBGP(IMPAIR_SEND_NO_MAIN_R2)) {
+				/* record-only so we propely emulate packet drop */
+				record_outbound_ike_msg(st, &reply_stream,
+					enum_name(&state_names, from_state));
+				libreswan_log("IMPAIR: Skipped sending STATE_MAIN_R2 response packet");
+			} else {
+				record_and_send_ike_msg(st, &reply_stream,
+					enum_name(&state_names, from_state));
+			}
 		}
 
 		/* Schedule for whatever timeout is specified */
 		if (!md->event_already_set) {
+			DBG(DBG_CONTROL, DBG_log("!event_already_set at reschedule"));
 			unsigned long delay_ms; /* delay is in milliseconds here */
 			enum event_type kind = smc->timeout_event;
 			bool agreed_time = FALSE;
 			struct connection *c = st->st_connection;
+
+			/* fixup in case of state machine jump for xauth without modecfg */
+			if (c->spd.this.xauth_client
+			    && st->hidden_variables.st_xauth_client_done
+			    && !c->spd.this.modecfg_client
+			    && (st->st_state == STATE_MAIN_I4 || st->st_state == STATE_AGGR_I2))
+			{
+				DBG(DBG_CONTROL, DBG_log("fixup XAUTH without ModeCFG event from EVENT_v1_RETRANSMIT to EVENT_SA_REPLACE"));
+				kind = EVENT_SA_REPLACE;
+			}
 
 			switch (kind) {
 			case EVENT_v1_RETRANSMIT: /* Retransmit packet */
@@ -2439,7 +2472,7 @@ void complete_v1_state_transition(struct msg_digest **mdp, stf_status result)
 			enum rc_type w = RC_NEW_STATE + st->st_state;
 			char sadetails[512];
 
-			passert(st->st_state < STATE_IKE_ROOF);
+			passert(st->st_state < STATE_IKEv1_ROOF);
 
 			sadetails[0] = '\0';
 
@@ -2828,8 +2861,8 @@ bool ikev1_decode_peer_id(struct msg_digest *md, bool initiator, bool aggrmode)
 				return FALSE;
 			}
 			duplicate_id(&st->st_connection->spd.that.id, &peer);
-			return TRUE;
 		}
+		return TRUE;
 	}
 
 	/* responder */
@@ -2842,7 +2875,7 @@ bool ikev1_decode_peer_id(struct msg_digest *md, bool initiator, bool aggrmode)
 		struct connection *c = st->st_connection;
 		bool fromcert;
 		uint16_t auth = xauth_calcbaseauth(st->st_oakley.auth);
-		lset_t auth_policy = LEMPTY;
+		lset_t auth_policy;
 
 		switch (auth) {
 		case OAKLEY_PRESHARED_KEY:
@@ -2860,13 +2893,15 @@ bool ikev1_decode_peer_id(struct msg_digest *md, bool initiator, bool aggrmode)
 		case OAKLEY_ECDSA_P521:
 		default:
 			DBG(DBG_CONTROL, DBG_log("ikev1 ike_decode_peer_id bad_case due to not supported policy"));
-			// bad_case(auth);
+			return FALSE;
 		}
 
-		struct connection *r = NULL;
-
-		r = refine_host_connection(st, &peer, FALSE /* we are responder */,
-				auth_policy, AUTH_UNSET /* ikev2 only */, &fromcert);
+		struct connection *r =
+			refine_host_connection(st, &peer,
+				FALSE,	/* we are responder */
+				auth_policy,
+				AUTH_UNSET,	/* ikev2 only */
+				&fromcert);
 
 		if (r == NULL) {
 			char buf[IDTOA_BUF];
@@ -2912,7 +2947,7 @@ bool ikev1_decode_peer_id(struct msg_digest *md, bool initiator, bool aggrmode)
 			}
 
 			update_state_connection(st, r);
-			c = r;	/* value not used */
+			c = r;	/* c not subsequently used */
 			/* redo from scratch so we read and check CERT payload */
 			DBG(DBG_CONTROL, DBG_log("retrying ike_decode_peer_id() with new conn"));
 			return ikev1_decode_peer_id(md, FALSE, aggrmode);

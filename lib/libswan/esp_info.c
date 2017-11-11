@@ -34,174 +34,85 @@
 #include "ike_alg_aes.h"
 #include "ike_alg_sha1.h"
 
-static bool alg_is_implemented(const struct ike_alg *alg)
-{
-	if (alg->algo_type == &ike_alg_dh) {
-		/* require an in-process/ike implementation of DH */
-		return ike_alg_is_ike(alg);
-	} else {
-		/* ask the kernel? */
-		return TRUE;
-	}
-}
-
-/*
- * Raw add routine: only checks for no duplicates
- */
-/* ??? much of this code is the same as raw_alg_info_ike_add (same bugs!) */
-static void raw_alg_info_esp_add(struct alg_info_esp *alg_info,
-				 const struct encrypt_desc *encrypt, unsigned ek_bits,
-				 const struct integ_desc *integ,
-				 const struct oakley_group_desc *dh)
-{
-	struct proposal_info *esp_info = alg_info->ai.proposals;
-	int cnt = alg_info->ai.alg_info_cnt;
-
-	/*
-	 * don't add duplicates
-	 *
-	 * ??? why is 0 wildcard for ek_bits? XXX: EK_BITS==0 means
-	 * use both the default and strongest key lengths.  I guess
-	 * checking if ek_bits matches either of those is two
-	 * hard/messy, so a wild card is easier.
-	 */
-	FOR_EACH_ESP_INFO(alg_info, esp_info) {
-		if (esp_info->encrypt == encrypt &&
-		    (ek_bits == 0 || esp_info->enckeylen == ek_bits) &&
-		    esp_info->integ == integ &&
-		    esp_info->dh == dh)
-			return;
-	}
-
-	/* check for overflows */
-	/* ??? passert seems dangerous */
-	passert(cnt < (int)elemsof(alg_info->ai.proposals));
-
-	esp_info[cnt].ikev1esp_transid = (encrypt != NULL ? encrypt->common.id[IKEv1_ESP_ID] : 0);
-	esp_info[cnt].enckeylen = ek_bits;
-	esp_info[cnt].ikev1esp_auth = (integ == &alg_info_integ_null) ? 0 : integ->common.id[IKEv1_ESP_ID];
-	esp_info[cnt].encrypt = encrypt;
-	esp_info[cnt].integ = (integ == &alg_info_integ_null) ? NULL : integ;
-	esp_info[cnt].dh = dh;
-
-	alg_info->ai.alg_info_cnt++;
-}
-
 /*
  * Add ESP alg info _with_ logic (policy):
  */
-static const char *alg_info_esp_add(const struct parser_policy *const policy UNUSED,
-				    struct alg_info *alg_info,
-				    const struct encrypt_desc *encrypt, int ek_bits,
-				    const struct prf_desc *prf,
-				    const struct integ_desc *integ,
-				    const struct oakley_group_desc *dh,
-				    char *err_buf, size_t err_buf_len)
+static bool esp_proposal_ok(const struct proposal_info *proposal,
+			    char *err_buf, size_t err_buf_len)
 {
-	pexpect(prf == NULL);
-
-	/* Policy: default to AES */
-	if (encrypt == NULL) {
-		encrypt = &ike_alg_encrypt_aes_cbc;
+	if (!DBGP(IMPAIR_ALLOW_NULL_NULL) &&
+	    !proposal_aead_none_ok(proposal, err_buf, err_buf_len)) {
+		return false;
 	}
 
-	if (ike_alg_is_aead(encrypt)) {
-		if (integ != NULL && integ != &alg_info_integ_null) {
-			snprintf(err_buf, err_buf_len,
-				 "AEAD ESP encryption algorithm '%s' must have a 'null' integrity algorithm",
-				 encrypt->common.name);
-			return err_buf;
-		}
-		raw_alg_info_esp_add((struct alg_info_esp *)alg_info,
-				     encrypt, ek_bits,
-				     &alg_info_integ_null, dh);
-	} else if (integ == &alg_info_integ_null) {
-		snprintf(err_buf, err_buf_len,
-			 "non-AEAD ESP encryption algorithm '%s' cannot have a 'null' integrity algorithm",
-			 encrypt->common.name);
-		return err_buf;
-	} else if (integ != NULL) {
-		raw_alg_info_esp_add((struct alg_info_esp *)alg_info,
-				     encrypt, ek_bits,
-				     integ, dh);
-	} else {
-		/*
-		 * Policy: default to MD5 and SHA1
-		 *
-		 * XXX: this should use the ike_alg DB and code like
-		 * plutoalg.c:clone_valid() to select the default
-		 * algorithm list.
-		 *
-		 * XXX: this adds INTEG to AEAD algorithms; the
-		 * IKE_ALG DB can be used to identify when this is the
-		 * case
-		 */
-		if (ike_alg_is_valid(&ike_alg_integ_sha1.common)) {
-			raw_alg_info_esp_add((struct alg_info_esp *)alg_info,
-					     encrypt, ek_bits,
-					     &ike_alg_integ_sha1, NULL);
-		}
-	}
-	return NULL;
+	passert(proposal->encrypt != NULL);
+	passert(proposal->prf == NULL);
+	passert(proposal->integ != NULL);
+	return true;
 }
 
-/*
- * Add AH alg info _with_ logic (policy):
- */
-static const char *alg_info_ah_add(const struct parser_policy *const policy UNUSED,
-				   struct alg_info *alg_info,
-				   const struct encrypt_desc *encrypt, int ek_bits,
-				   const struct prf_desc *prf,
-				   const struct integ_desc *integ,
-				   const struct oakley_group_desc *dh,
-				   char *err_buf, size_t err_buf_len)
-{
-	pexpect(ek_bits == 0);
-	pexpect(encrypt == NULL);
-	pexpect(prf == NULL);
+static const struct ike_alg *default_esp_encrypt[] = {
+	&ike_alg_encrypt_aes_cbc.common,
+	NULL,
+};
 
-	/* ah=null is invalid */
-	if (integ == &alg_info_integ_null) {
-		snprintf(err_buf, err_buf_len,
-			 "AH cannot have a 'null' integrity algorithm");
-		return err_buf;
-	} else if (integ != NULL) {
-		raw_alg_info_esp_add((struct alg_info_esp *)alg_info,
-				     NULL, 0, integ, dh);
-	} else {
-		/*
-		 * Policy: default to MD5 and SHA1
-		 *
-		 * XXX: this should use the IKE_ALG DB and code like
-		 * plutoalg.c:clone_valid() to select the default
-		 * algorithm list.
-		 */
-		if (ike_alg_is_valid(&ike_alg_integ_sha1.common)) {
-			raw_alg_info_esp_add((struct alg_info_esp *)alg_info,
-					     encrypt, ek_bits,
-					     &ike_alg_integ_sha1, NULL);
-		}
-	}
-	return NULL;
-}
+static const struct ike_alg *default_esp_integ[] = {
+	&ike_alg_integ_sha1.common,
+	NULL,
+};
 
-const struct parser_param esp_parser_param = {
-	.protocol = "ESP",
+const struct proposal_defaults esp_defaults = {
+	.encrypt = default_esp_encrypt,
+	.integ = default_esp_integ,
+};
+
+const struct parser_protocol esp_parser_protocol = {
+	.name = "ESP",
 	.ikev1_alg_id = IKEv1_ESP_ID,
 	.protoid = PROTO_IPSEC_ESP,
-	.alg_is_implemented = alg_is_implemented,
-	.alg_info_add = alg_info_esp_add,
+	.ikev1_defaults = &esp_defaults,
+	.ikev2_defaults = &esp_defaults,
+	.proposal_ok = esp_proposal_ok,
 	.encrypt_alg_byname = encrypt_alg_byname,
 	.integ_alg_byname = integ_alg_byname,
 	.dh_alg_byname = dh_alg_byname,
 };
 
-const struct parser_param ah_parser_param = {
-	.protocol = "AH",
+static bool ah_proposal_ok(const struct proposal_info *proposal,
+			   char *err_buf, size_t err_buf_len)
+{
+	passert(proposal->encrypt == NULL);
+	passert(proposal->prf == NULL);
+	passert(proposal->integ != NULL);
+
+	if (DBGP(IMPAIR_ALLOW_NULL_NULL))
+		return true;
+
+	/* ah=null is invalid */
+	if (proposal->integ == &ike_alg_integ_none) {
+		snprintf(err_buf, err_buf_len,
+			 "AH cannot have 'none' as the integrity algorithm");
+		return false;
+	}
+	return true;
+}
+
+static const struct ike_alg *default_ah_integ[] = {
+	&ike_alg_integ_sha1.common,
+	NULL,
+};
+
+const struct proposal_defaults ah_defaults = {
+	.integ = default_ah_integ,
+};
+
+const struct parser_protocol ah_parser_protocol = {
+	.name = "AH",
 	.ikev1_alg_id = IKEv1_ESP_ID,
 	.protoid = PROTO_IPSEC_AH,
-	.alg_is_implemented = alg_is_implemented,
-	.alg_info_add = alg_info_ah_add,
+	.ikev1_defaults = &ah_defaults,
+	.ikev2_defaults = &ah_defaults,
+	.proposal_ok = ah_proposal_ok,
 	.integ_alg_byname = integ_alg_byname,
 	.dh_alg_byname = dh_alg_byname,
 };
@@ -214,17 +125,21 @@ const struct parser_param ah_parser_param = {
 
 static struct alg_info_esp *alg_info_discover_pfsgroup_hack(struct alg_info_esp *aie,
 							    const char *alg_str,
-							    char *err_buf, size_t err_buf_len,
-							    const struct parser_param *parser_param)
+							    char *err_buf, size_t err_buf_len)
 {
 	if (aie == NULL) {
 		return NULL;
 	}
 
 	/*
-	 * Find the last proposal, of present (never know, there could
-	 * be no algorithms).
+	 * Find the first and last proposal, if present (never know,
+	 * there could be no algorithms).
 	 */
+	struct proposal_info *first = NULL;
+	FOR_EACH_ESP_INFO(aie, esp_info) {
+		first = esp_info;
+		break;
+	}
 	struct proposal_info *last = NULL;
 	FOR_EACH_ESP_INFO(aie, esp_info) {
 		last = esp_info;
@@ -235,31 +150,44 @@ static struct alg_info_esp *alg_info_discover_pfsgroup_hack(struct alg_info_esp 
 	}
 
 	/*
-	 * Restrict DH to just the last proposal.
+	 * Make certain that either all algorithms have the same DH or
+	 * all are NULL (with the exception of the last).
 	 *
-	 * For instance, the first "modp1024" in
-	 * "aes;modp1024,aes;modp2048" isn't allowed.
-	 *
-	 * Why? Because pluto only understands one DH and having it
-	 * last should help have it stand out?
+	 * For instance, aes-modp1024,aes-modp2048 isn't allowed
+	 * because pluto assumes only one PFS group.
 	 */
 	FOR_EACH_ESP_INFO(aie, esp_info) {
 		if (esp_info == last) {
 			continue;
 		}
-		if (esp_info->dh == NULL) {
-			continue;
+		if (first->dh != esp_info->dh) {
+			snprintf(err_buf, err_buf_len,
+				 "%s DH algorithm '%s' must be specified last",
+				 esp_info->protocol->name,
+				 (first->dh != NULL ? first->dh : esp_info->dh)->common.fqn);
+			alg_info_free(&aie->ai);
+			return NULL;
 		}
-		snprintf(err_buf, err_buf_len,
-			 "%s DH algorithm '%s' must be specified last",
-			 parser_param->protocol,
-			 esp_info->dh->common.name);
-		alg_info_free(&aie->ai);
-		return NULL;
+		if (esp_info->dh != NULL && last->dh == NULL) {
+			snprintf(err_buf, err_buf_len,
+				 "%s DH algorithm '%s' must be specified last",
+				 esp_info->protocol->name,
+				 esp_info->dh->common.fqn);
+			alg_info_free(&aie->ai);
+			return NULL;
+		}
+		if (esp_info->dh != NULL && esp_info->dh != last->dh) {
+			snprintf(err_buf, err_buf_len,
+				 "%s DH algorithm must be specified once",
+				 esp_info->protocol->name);
+			alg_info_free(&aie->ai);
+			return NULL;
+		}
 	}
 
 	/*
-	 * Restrict the DH separator character to ';'.
+	 * Restrict the DH separator character to ';' and the last
+	 * proposal.
 	 *
 	 * While the parser allows both "...;modp1024" and
 	 * "...-modp1024", pluto only admits to the former - so that
@@ -268,25 +196,67 @@ static struct alg_info_esp *alg_info_discover_pfsgroup_hack(struct alg_info_esp 
 	 *
 	 * Why? Because this is how it worked in the past.  Presumably
 	 * ';' makes it clear that it applies to all algorithms?
+	 *
+	 * Conversely, if all proposals include DH don't allow any
+	 * ';'.
 	 */
 	if (last->dh != NULL) {
 		char *last_dash = strrchr(alg_str, '-');
 		char *last_semi = strrchr(alg_str, ';');
-		if (last_semi == NULL || last_semi < last_dash) {
-			snprintf(err_buf, err_buf_len,
-				 "%s DH algorithm '%s' must be separated using a ';'",
-				 parser_param->protocol,
-				 last->dh->common.name);
-			alg_info_free(&aie->ai);
-			return NULL;
+		char *last_comma = strrchr(alg_str, ',');
+		if (first != last && first->dh == NULL) {
+			/* reject missing ';'. */
+			if (last_semi == NULL) {
+				snprintf(err_buf, err_buf_len,
+					 "%s DH algorithm '%s' must be separated using a ';'",
+					 last->protocol->name,
+					 last->dh->common.fqn);
+				alg_info_free(&aie->ai);
+				return NULL;
+			}
+			/* reject xxx;DH,yyy */
+			if (last_comma != NULL && last_semi < last_comma) {
+				snprintf(err_buf, err_buf_len,
+					 "%s DH algorithm must appear after last proposal",
+					 last->protocol->name);
+				alg_info_free(&aie->ai);
+				return NULL;
+			}
+			/* reject yyy,xxx-DH */
+			if (last_dash != NULL && last_semi < last_dash) {
+				snprintf(err_buf, err_buf_len,
+					 "%s DH algorithm must be at end of proposal",
+					 last->protocol->name);
+				alg_info_free(&aie->ai);
+				return NULL;
+			}
+		} else if (first != last && first->dh != NULL) {
+			/* reject ...;... */
+			if (last_semi != NULL) {
+				snprintf(err_buf, err_buf_len,
+					 "%s DH algorithm must appear once after last proposal",
+					 last->protocol->name);
+				alg_info_free(&aie->ai);
+				return NULL;
+			}
 		}
+	}
+
+	/*
+	 * Now go through and force all DHs to a consistent value.
+	 *
+	 * This way, something printing an individual proposal will
+	 * include the common DH; and for IKEv2 it can just pick up
+	 * that DH.
+	 */
+	FOR_EACH_ESP_INFO(aie, esp_info) {
+		esp_info->dh = last->dh;
 	}
 
 	/*
 	 * Use last's DH for PFS.  Could be NULL but that is ok.
 	 *
-	 * XXX: Instead blat all proposals with the DH so that the
-	 * IKEv2 code can make use of this?
+	 * Since DH is set uniformly, could use first.DH instead.
 	 */
 	aie->esp_pfsgroup = last->dh;
 	return aie;
@@ -327,10 +297,9 @@ struct alg_info_esp *alg_info_esp_create_from_str(const struct parser_policy *po
 				   &alg_info_esp->ai,
 				   alg_str,
 				   err_buf, err_buf_len,
-				   &esp_parser_param);
+				   &esp_parser_protocol);
 	alg_info_esp = alg_info_discover_pfsgroup_hack(alg_info_esp, alg_str,
-						       err_buf, err_buf_len,
-						       &esp_parser_param);
+						       err_buf, err_buf_len);
 	return alg_info_esp;
 }
 
@@ -354,210 +323,8 @@ struct alg_info_esp *alg_info_ah_create_from_str(const struct parser_policy *pol
 				   &alg_info_ah->ai,
 				   alg_str,
 				   err_buf, err_buf_len,
-				   &ah_parser_param);
+				   &ah_parser_protocol);
 	alg_info_ah = alg_info_discover_pfsgroup_hack(alg_info_ah, alg_str,
-						      err_buf, err_buf_len,
-						      &ah_parser_param);
+						      err_buf, err_buf_len);
 	return alg_info_ah;
-}
-
-/* snprint already parsed transform list (alg_info) */
-void alg_info_esp_snprint(char *buf, size_t buflen,
-			  const struct alg_info_esp *alg_info_esp)
-{
-	char *ptr = buf;
-	char *be = buf + buflen;
-
-	passert(buflen > 0);
-
-	switch (alg_info_esp->ai.alg_info_protoid) {
-	case PROTO_IPSEC_ESP:
-	{
-		const char *sep = "";
-		FOR_EACH_ESP_INFO(alg_info_esp, esp_info) {
-			snprintf(ptr, be - ptr,
-				 "%s%s(%d)_%03d-%s(%d)", sep,
-				 enum_short_name(&esp_transformid_names,
-						 esp_info->ikev1esp_transid),
-				 esp_info->ikev1esp_transid,
-				 (int)esp_info->enckeylen,
-				 strip_prefix(enum_short_name(&auth_alg_names,
-							      esp_info->ikev1esp_auth),
-					      "HMAC_"),
-				 esp_info->ikev1esp_auth);
-			ptr += strlen(ptr);
-			sep = ", ";
-		}
-		if (alg_info_esp->esp_pfsgroup != NULL) {
-			snprintf(ptr, be - ptr, "; pfsgroup=%s(%d)",
-				enum_short_name(&oakley_group_names,
-						alg_info_esp->esp_pfsgroup->group),
-				alg_info_esp->esp_pfsgroup->group);
-			ptr += strlen(ptr);	/* ptr not subsequently used */
-		}
-		break;
-	}
-
-	case PROTO_IPSEC_AH:
-	{
-		const char *sep = "";
-		FOR_EACH_ESP_INFO(alg_info_esp, esp_info) {
-			snprintf(ptr, be - ptr,
-				 "%s%s(%d)", sep,
-				 strip_prefix(enum_short_name(&auth_alg_names,
-							      esp_info->ikev1esp_auth),
-					      "HMAC_"),
-				 esp_info->ikev1esp_auth);
-			ptr += strlen(ptr);
-			sep = ", ";
-		}
-		if (alg_info_esp->esp_pfsgroup != NULL) {
-			snprintf(ptr, be - ptr, "; pfsgroup=%s(%d)",
-				enum_short_name(&oakley_group_names,
-						alg_info_esp->esp_pfsgroup->group),
-				alg_info_esp->esp_pfsgroup->group);
-			ptr += strlen(ptr);	/* ptr not subsequently used */
-		}
-		break;
-	}
-
-	default:
-		snprintf(buf, be - ptr, "INVALID protoid=%d\n",
-			alg_info_esp->ai.alg_info_protoid);
-		ptr += strlen(ptr);	/* ptr not subsequently used */
-		break;
-	}
-}
-
-static int snprint_esp_info(char *ptr, size_t buflen, const char *sep,
-			    const struct proposal_info *esp_info)
-{
-	unsigned eklen = esp_info->enckeylen;
-
-	return snprintf(ptr, buflen, "%s%s(%d)_%03d-%s(%d)",
-			sep,
-			enum_short_name(&esp_transformid_names,
-					       esp_info->ikev1esp_transid),
-			esp_info->ikev1esp_transid, eklen,
-			strip_prefix(enum_short_name(&auth_alg_names,
-						esp_info->ikev1esp_auth),
-				"HMAC_"),
-			esp_info->ikev1esp_auth);
-}
-
-void alg_info_snprint_esp_info(char *buf, size_t buflen,
-			       const struct proposal_info *esp_info)
-{
-	snprint_esp_info(buf, buflen, "", esp_info);
-}
-
-/*
- * print which ESP algorithm has actually been selected, based upon which
- * ones are actually loaded.
- */
-static void alg_info_snprint_esp(char *buf, size_t buflen,
-				 struct alg_info_esp *alg_info)
-{
-	if (alg_info == NULL) {
-		PEXPECT_LOG("%s", "parameter alg_info unexpectedly NULL");
-		/* return some bogus output */
-		snprintf(buf, buflen,
-			 "OOPS, parameter alg_info unexpectedly NULL");
-		return;
-	}
-
-	char *ptr = buf;
-	const char *sep = "";
-
-	passert(buflen >= sizeof("none"));
-
-	jam_str(buf, buflen, "none");
-
-	FOR_EACH_ESP_INFO(alg_info, esp_info) {
-		err_t ugh = check_kernel_encrypt_alg(esp_info->ikev1esp_transid, 0);
-
-		if (ugh != NULL) {
-			DBG_log("esp algid=%d not available: %s",
-				esp_info->ikev1esp_transid, ugh);
-			continue;
-		}
-
-		if (!kernel_alg_esp_auth_ok(esp_info->ikev1esp_auth, NULL)) {
-			DBG_log("auth algid=%d not available",
-				esp_info->ikev1esp_auth);
-			continue;
-		}
-
-		int ret = snprint_esp_info(ptr, buflen, sep, esp_info);
-
-		if (ret < 0 || (size_t)ret >= buflen) {
-			DBG_log("alg_info_snprint_esp: buffer too short for snprintf");
-			break;
-		}
-		ptr += ret;
-		buflen -= ret;
-		sep = ", ";
-	}
-}
-
-/*
- * print which AH algorithm has actually been selected, based upon which
- * ones are actually loaded.
- */
-static void alg_info_snprint_ah(char *buf, size_t buflen,
-				struct alg_info_esp *alg_info)
-{
-	if (alg_info == NULL) {
-		PEXPECT_LOG("%s", "parameter alg_info unexpectedly NULL");
-		/* return some bogus output */
-		snprintf(buf, buflen,
-			 "OOPS, parameter alg_info unexpectedly NULL");
-		return;
-	}
-
-	char *ptr = buf;
-	const char *sep = "";
-
-	passert(buflen >= sizeof("none"));
-	jam_str(buf, buflen, "none");
-
-	FOR_EACH_ESP_INFO(alg_info, esp_info) {
-		if (!kernel_alg_esp_auth_ok(esp_info->ikev1esp_auth, NULL)) {
-			DBG_log("auth algid=%d not available",
-				esp_info->ikev1esp_auth);
-			continue;
-		}
-
-		int ret = snprintf(ptr, buflen, "%s%s(%d)",
-			       sep,
-			       strip_prefix(enum_name(&auth_alg_names,
-							esp_info->ikev1esp_auth),
-					"HMAC_"),
-			       esp_info->ikev1esp_auth);
-
-		if (ret < 0 || (size_t)ret >= buflen) {
-			DBG_log("alg_info_snprint_ah: buffer too short for snprintf");
-			break;
-		}
-		ptr += ret;
-		buflen -= ret;
-		sep = ", ";
-	}
-}
-
-void alg_info_snprint_phase2(char *buf, size_t buflen,
-			     struct alg_info_esp *alg_info)
-{
-	switch (alg_info->ai.alg_info_protoid) {
-	case PROTO_IPSEC_ESP:
-		alg_info_snprint_esp(buf, buflen, alg_info);
-		break;
-
-	case PROTO_IPSEC_AH:
-		alg_info_snprint_ah(buf, buflen, alg_info);
-		break;
-
-	default:
-		bad_case(alg_info->ai.alg_info_protoid);
-	}
 }

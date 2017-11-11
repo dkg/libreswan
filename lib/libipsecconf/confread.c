@@ -36,7 +36,6 @@
 
 #include "lswalloc.h"
 
-#include "ipsecconf/files.h"
 #include "ipsecconf/confread.h"
 #include "ipsecconf/starterlog.h"
 #include "ipsecconf/interfaces.h"
@@ -76,13 +75,15 @@ void ipsecconf_default_values(struct starter_config *cfg)
 	/* config setup */
 	cfg->setup.options[KBF_FRAGICMP] = FALSE; /* see sysctl_ipsec_icmp in ipsec_proc.c */
 	cfg->setup.options[KBF_HIDETOS] = TRUE;
-	cfg->setup.options[KBF_PLUTORESTARTONCRASH] = TRUE;
 	cfg->setup.options[KBF_PLUTOSTDERRLOGTIME] = TRUE;
 	cfg->setup.options[KBF_PLUTOSTDERRLOGAPPEND] = TRUE;
+	cfg->setup.options[KBF_PLUTOSTDERRLOGIP] = TRUE;
 	cfg->setup.options[KBF_UNIQUEIDS] = TRUE;
 	cfg->setup.options[KBF_DO_DNSSEC] = TRUE;
 	cfg->setup.options[KBF_PERPEERLOG] = FALSE;
 	cfg->setup.options[KBF_IKEPORT] = IKE_UDP_PORT;
+	cfg->setup.options[KBF_IKEBUF] = IKE_BUF_AUTO;
+	cfg->setup.options[KBF_IKE_ERRQUEUE] = TRUE;
 	cfg->setup.options[KBF_NFLOG_ALL] = 0; /* disabled per default */
 	cfg->setup.options[KBF_XFRMLIFETIME] = 300; /* not used by pluto itself */
 	cfg->setup.options[KBF_NHELPERS] = -1; /* see also plutomain.c */
@@ -166,6 +167,10 @@ void ipsecconf_default_values(struct starter_config *cfg)
 
 	cfg->conn_default.options[KBF_CONNADDRFAMILY] = AF_INET;
 
+	/* set default updown script */
+	cfg->conn_default.left.updown = clone_str(DEFAULT_UPDOWN, "default updown str");
+	cfg->conn_default.right.updown = clone_str(DEFAULT_UPDOWN, "default updown str");
+
 	cfg->conn_default.left.addr_family = AF_INET;
 	anyaddr(AF_INET, &cfg->conn_default.left.addr);
 	cfg->conn_default.left.nexttype = KH_NOTSET;
@@ -183,7 +188,7 @@ void ipsecconf_default_values(struct starter_config *cfg)
 	cfg->conn_default.options[KBF_AUTO] = STARTUP_IGNORE;
 	cfg->conn_default.state = STATE_LOADED;
 
-	cfg->ctlbase = clone_str(CTL_FILE, "default base");
+	cfg->ctlsocket = clone_str(DEFAULT_CTL_SOCKET, "default control socket");
 
 	cfg->conn_default.left.authby = AUTH_UNSET;
 	cfg->conn_default.right.authby = AUTH_UNSET;
@@ -434,7 +439,7 @@ static bool validate_end(struct starter_conn *conn_st,
 
 		if (end->strings[KSCF_IP][0] == '%') {
 			pfree(end->iface);
-			end->iface = clone_str(end->strings[KSCF_IP] + 1, "KH_IPADDR end->iface");
+			end->iface = clone_str(end->strings[KSCF_IP], "KH_IPADDR end->iface");
 			if (!starter_iface_find(end->iface, family,
 					       &end->addr,
 					       &end->nexthop))
@@ -683,6 +688,8 @@ static bool validate_end(struct starter_conn *conn_st,
 
 	if (end->strings_set[KSCF_UPDOWN])
 		end->updown = clone_str(end->strings[KSCF_UPDOWN], "KSCF_UPDOWN");
+	else
+		end->updown = clone_str(DEFAULT_UPDOWN, "KSCF_UPDOWN default");
 
 	if (end->strings_set[KSCF_PROTOPORT]) {
 		err_t ugh;
@@ -1461,7 +1468,7 @@ static bool init_load_conn(struct starter_config *cfg,
 struct starter_config *confread_load(const char *file,
 				     err_t *perr,
 				     bool resolvip,
-				     const char *ctlbase,
+				     const char *ctlsocket,
 				     bool setuponly)
 {
 	bool err = FALSE;
@@ -1481,9 +1488,9 @@ struct starter_config *confread_load(const char *file,
 	 */
 	ipsecconf_default_values(cfg);
 
-	if (ctlbase != NULL) {
-		pfree(cfg->ctlbase);
-		cfg->ctlbase = clone_str(ctlbase, "control socket");
+	if (ctlsocket != NULL) {
+		pfree(cfg->ctlsocket);
+		cfg->ctlsocket = clone_str(ctlsocket, "default ctlsocket");
 	}
 
 	/**
@@ -1498,19 +1505,17 @@ struct starter_config *confread_load(const char *file,
 	}
 
 	if (!setuponly) {
-		/**
-		 * Find %default
-		 *
-		 */
-		struct section_list *sconn;
-
 #ifdef USE_DNSSEC
 		unbound_sync_init(cfg->setup.options[KBF_DO_DNSSEC],
 				cfg->setup.strings[KSF_PLUTO_DNSSEC_ROOTKEY_FILE],
 				cfg->setup.strings[KSF_PLUTO_DNSSEC_ANCHORS]);
 #endif
 
-		for (sconn = cfgp->sections.tqh_first; (!err) && sconn != NULL;
+		/*
+		 * Load %default conn
+		 * ??? is it correct to accept multiple %default conns?
+		 */
+		for (struct section_list *sconn = cfgp->sections.tqh_first; (!err) && sconn != NULL;
 		     sconn = sconn->link.tqe_next) {
 			if (streq(sconn->name, "%default")) {
 				starter_log(LOG_LEVEL_DEBUG,
@@ -1522,14 +1527,13 @@ struct starter_config *confread_load(const char *file,
 			}
 		}
 
-		/**
+		/*
 		 * Load other conns
 		 */
-		for (sconn = cfgp->sections.tqh_first; sconn != NULL;
+		for (struct section_list *sconn = cfgp->sections.tqh_first; sconn != NULL;
 		     sconn = sconn->link.tqe_next) {
-			if (streq(sconn->name, "%default"))
-				continue;
-			err |= init_load_conn(cfg, cfgp, sconn,
+			if (!streq(sconn->name, "%default"))
+				err |= init_load_conn(cfg, cfgp, sconn,
 						 FALSE,
 						 resolvip, perr);
 		}
@@ -1572,11 +1576,14 @@ static void confread_free_conn(struct starter_conn *conn)
 
 	pfreeany(conn->left.virt);
 	pfreeany(conn->right.virt);
+
+	pfreeany(conn->left.updown);
+	pfreeany(conn->right.updown);
 }
 
 void confread_free(struct starter_config *cfg)
 {
-	pfree(cfg->ctlbase);
+	pfree(cfg->ctlsocket);
 
 	int i;
 
