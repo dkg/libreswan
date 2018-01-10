@@ -11,7 +11,7 @@ Standards-Version: 4.1.3
 Build-Depends:
  bison,
  bzip2,
- debhelper (>= 10~),
+ debhelper (>= 11~),
  flex,
  htmldoc,
  libaudit-dev [linux-any],

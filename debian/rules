@@ -3,7 +3,7 @@
 include /usr/share/dpkg/default.mk
 
 %:
-	dh $@ --with systemd
+	dh $@
 
 # this should track the definition of USERCOMPILE in mk/userland-cflags.mk:43
 # but without -fstack-protector-all for arches that lack stack-protector
