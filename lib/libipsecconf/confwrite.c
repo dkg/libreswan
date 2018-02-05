@@ -24,6 +24,11 @@
 #include <assert.h>
 #include <sys/queue.h>
 
+#include "constants.h"
+#include "lswlog.h"
+#include "lmod.h"
+#include "ip_address.h"
+
 #include "ipsecconf/confread.h"
 #include "ipsecconf/confwrite.h"
 #include "ipsecconf/keywords.h"
@@ -144,6 +149,21 @@ static void confwrite_int(FILE *out,
 			}
 			break;
 
+		case kt_lset:
+			if (options_set[k->field]) {
+				unsigned long val = options[k->field];
+
+				if (val != 0) {
+					LSWLOG_FILE(out, buf) {
+						lswlogf(buf, "\t%s%s=\"", side, k->keyname);
+						lswlog_enum_lset_short(buf, k->info->names,
+								       ",", val);
+						lswlogf(buf, "\"");
+					}
+				}
+			}
+			break;
+
 		case kt_comment:
 			break;
 
@@ -214,6 +234,7 @@ static void confwrite_str(FILE *out,
 		case kt_invertbool:
 		case kt_enum:
 		case kt_list:
+		case kt_lset:
 		case kt_loose_enum:
 			/* special enumeration */
 			break;
@@ -448,6 +469,7 @@ static void confwrite_conn(FILE *out, struct starter_conn *conn, bool verbose)
 			 (POLICY_AUTHENTICATE | POLICY_ENCRYPT));
 		lset_t shunt_policy = (conn->policy & POLICY_SHUNT_MASK);
 		lset_t ikev2_policy = (conn->policy & POLICY_IKEV2_MASK);
+		lset_t ppk_policy = (conn->policy & (POLICY_PPK_ALLOW | POLICY_PPK_INSIST));
 		lset_t ike_frag_policy = (conn->policy & POLICY_IKE_FRAG_MASK);
 		static const char *const noyes[2 /*bool*/] = {"no", "yes"};
 		/* short-cuts for writing out a field that is a policy bit.
@@ -540,6 +562,24 @@ static void confwrite_conn(FILE *out, struct starter_conn *conn, bool verbose)
 					break;
 				}
 				cwf("ikev2", v2ps);
+			}
+
+			/* ppk= */
+			{
+				const char *p_ppk = "UNKNOWN";
+
+				switch (ppk_policy) {
+				case LEMPTY:
+					p_ppk = "no";
+					break;
+				case POLICY_PPK_ALLOW:
+					p_ppk = "permit";
+					break;
+				case POLICY_PPK_INSIST:
+					p_ppk = "insist";
+					break;
+				}
+				cwf("ppk", p_ppk);
 			}
 
 			/* esn= */

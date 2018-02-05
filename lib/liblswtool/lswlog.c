@@ -37,35 +37,23 @@
 
 bool log_to_stderr = TRUE;	/* should log go to stderr? */
 
-char *progname = "";
-static char *prog_suffix = "";
+const char *progname = "";
+static const char *prog_suffix = "";
 
-void tool_init_log(char *name)
+void tool_init_log(const char *name)
 {
-	progname = strrchr(name, '/');
-	if (progname != NULL) {
-		/* step off the '/' */
-		progname++;
-	} else {
-		progname = name;
-	}
+	const char *last_slash = strrchr(name, '/');
+
+	progname = last_slash == NULL ? name : last_slash + 1;
 	prog_suffix = ": ";
 
 	if (log_to_stderr)
 		setbuf(stderr, NULL);
 }
 
-void libreswan_vloglog(enum rc_type rc UNUSED, const char *fmt, va_list ap)
-{
-	char m[LOG_WIDTH];	/* longer messages will be truncated */
-	vsnprintf(m, sizeof(m), fmt, ap);
+/* <prefix><PROGNAME>: <message>. Errno N: <errmess> */
 
-	if (log_to_stderr)
-		fprintf(stderr, "%s%s%s\n",
-			progname, prog_suffix, m);
-}
-
-void lswlog_log_errno(int e, const char *prefix, const char *message, ...)
+void libreswan_log_errno(int e, const char *prefix, const char *message, ...)
 {
 	if (log_to_stderr) {
 		LSWLOG_FILE(stderr, buf) {
@@ -84,12 +72,28 @@ void lswlog_log_errno(int e, const char *prefix, const char *message, ...)
 	}
 }
 
-void lswlog_pre(struct lswlog *buf)
+void lswlog_errno_prefix(struct lswlog *buf, const char *prefix)
+{
+	lswlogs(buf, prefix);
+	lswlogs(buf, progname);
+	lswlogs(buf, prog_suffix);
+}
+
+void lswlog_errno_suffix(struct lswlog *buf, int e)
+{
+	lswlogs(buf, ".");
+	lswlog_errno(buf, e);
+	if (log_to_stderr) {
+		lswlog_to_file_stream(buf, stderr);
+	}
+}
+
+void lswlog_log_prefix(struct lswlog *buf)
 {
 	lswlogf(buf, "%s%s", progname, prog_suffix);
 }
 
-void lswlog_to_logger_stream(struct lswlog *buf, enum rc_type rc UNUSED)
+void lswlog_to_log_whack_stream(struct lswlog *buf, enum rc_type rc UNUSED)
 {
 	if (log_to_stderr) {
 		fprintf(stderr, "%s\n", buf->array);

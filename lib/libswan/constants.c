@@ -4,6 +4,7 @@
  * Copyright (C) 2012 Avesh Agarwal <avagarwa@redhat.com>
  * Copyright (C) 1998-2002,2015  D. Hugh Redelmeier.
  * Copyright (C) 2016-2017 Andrew Cagney
+ * Copyright (C) 2017 Vukasin Karadzic <vukasin.karadzic@gmail.com>
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -34,6 +35,11 @@
 #include "constants.h"
 #include "enum_names.h"
 #include "lswlog.h"
+
+const char *bool_str(bool b)
+{
+	return b ? "yes" : "no";
+}
 
 /*
  * Jam a string into a buffer of limited size.
@@ -632,8 +638,7 @@ enum_names ipcomp_transformid_names = {
 
 static const char *const ike_idtype_name[] = {
 	/* private to Pluto */
-	"%fromcert",	/* -2, ID_FROMCERT:taken from certificate */
-	"%myid",	/* -1, ID_MYID */
+	"%fromcert",	/* -1, ID_FROMCERT:taken from certificate */
 	"%none",	/* 0, ID_NONE */
 
 	/* standardized */
@@ -674,7 +679,7 @@ enum_names ike_idtype_names = ID_NR(ID_IPV4_ADDR, ID_NULL, NULL);
  * so we have to tack two ranges onto ike_idtype_names.
  */
 enum_names ike_idtype_names_extended0 = ID_NR(ID_NONE, ID_NONE, &ike_idtype_names);
-enum_names ike_idtype_names_extended = ID_NR(ID_FROMCERT, ID_MYID, &ike_idtype_names_extended0);
+enum_names ike_idtype_names_extended = ID_NR(ID_FROMCERT, ID_FROMCERT, &ike_idtype_names_extended0);
 
 /* IKEv2 names exclude ID_IPV4_ADDR_SUBNET, ID_IPV6_ADDR_SUBNET-ID_IPV6_ADDR_RANGE */
 
@@ -1358,12 +1363,15 @@ static const char *const ikev2_cp_attribute_type_name[] = {
 	"IKEv2_P_CSCF_IP6_ADDRESS",
 	"IKEv2_FTT_KAT",
 	"IKEv2_EXTERNAL_SOURCE_IP4_NAT_INFO", /* 3gpp */
-	"IKEv2_TIMEOUT_PERIOD_FOR_LIVENESS_CHECK" /* 3gpp */
+	"IKEv2_TIMEOUT_PERIOD_FOR_LIVENESS_CHECK", /* 3gpp */
+	"IKEv2_INTERNAL_DNS_DOMAIN", /* draft-ietf-ipsecme-split-dns */
+	/* "IKEv2_INTERNAL_DNSSEC_TA", draft-ietf-ipsecme-split-dns, no Code Point yet */
 };
 
 enum_names ikev2_cp_attribute_type_names = {
 	IKEv2_CP_ATTR_RESERVED,
-	IKEv2_TIMEOUT_PERIOD_FOR_LIVENESS_CHECK,
+	IKEv2_INTERNAL_DNS_DOMAIN,
+	/* IKEv2_INTERNAL_DNSSEC_TA, */
 	ARRAY_REF(ikev2_cp_attribute_type_name),
 	NULL, /* prefix */
 	NULL
@@ -1612,6 +1620,35 @@ enum_names ikev1_notify_names = {
 	&ikev1_notify_status_names
 };
 
+/*
+static const char *const ikev2_ppk_id_type_name[] = {
+	"PPK_ID_OPAQUE",
+	"PPK_ID_FIXED",
+};
+
+static enum_names ikev2_ppk_id_type_names = {
+	PPK_ID_OPAQUE,
+	PPK_ID_FIXED,
+	ARRAY_REF(ikev2_ppk_id_type_name),
+	NULL,
+	NULL
+};
+*/
+
+static const char *const ikev2_notify_name_private[] = {
+	"v2N_USE_PPK",
+	"v2N_PPK_IDENTITY",
+	"v2N_NO_PPK_AUTH",
+};
+
+static enum_names ikev2_notify_names_private = {
+	v2N_USE_PPK,
+	v2N_NO_PPK_AUTH,
+	ARRAY_REF(ikev2_notify_name_private),
+	"v2N_", /* prefix */
+	NULL
+};
+
 /* http://www.iana.org/assignments/ikev2-parameters/ikev2-parameters.xml#ikev2-parameters-13 */
 static const char *const ikev2_notify_name_16384[] = {
 	"v2N_INITIAL_CONTACT",    /* 16384 */
@@ -1669,7 +1706,7 @@ static enum_names ikev2_notify_names_16384 = {
 	v2N_SIGNATURE_HASH_ALGORITHMS,
 	ARRAY_REF(ikev2_notify_name_16384),
 	"v2N_", /* prefix */
-	NULL
+	&ikev2_notify_names_private
 };
 
 static const char *const ikev2_notify_name[] = {
@@ -2019,18 +2056,38 @@ bool subnetisnone(const ip_subnet *sn)
 	return isanyaddr(&base) && subnetishost(sn);
 }
 
-static const char *const ppk_name[] = {
-	"PPK_PSK",
-	"PPK_RSA",
-	"PPK_XAUTH",
-	"PPK_NULL",
+static const char *const pkk_name[] = {
+	"PKK_PSK",
+	"PKK_RSA",
+	"PKK_XAUTH",
+	"PKK_PPK",
+	"PKK_NULL",
 };
 
-enum_names ppk_names = {
-	PPK_PSK,
-	PPK_NULL,
-	ARRAY_REF(ppk_name),
+enum_names pkk_names = {
+	PKK_PSK,
+	PKK_NULL,
+	ARRAY_REF(pkk_name),
 	NULL, /* prefix */
+	NULL
+};
+
+/*
+ * IKEv2 PPK ID types - draft-ietf-ipsecme-qr-ikev2-01
+ */
+static const char *const ikev2_ppk_id_name[] = {
+	/* 0 - Reserved */
+	"PPK_ID_OPAQUE",
+	"PPK_ID_FIXED",
+	/* 3 - 127 Unassigned */
+	/* 128 - 255 Private Use */
+};
+
+enum_names ikev2_ppk_id_names = {
+	PPK_ID_OPAQUE,
+	PPK_ID_FIXED,
+	ARRAY_REF(ikev2_ppk_id_name),
+	"PPK_ID_", /* prefix */
 	NULL
 };
 
@@ -2074,7 +2131,7 @@ struct keyword_enum_values kw_host_list =
  * Use -1 as the starting point / sentinel.
  *
  * XXX: Works fine provided we ignore the enum_names object that
- * contains -ve values stored in unsigned fields!
+ * contains negative values stored in unsigned fields!
  */
 
 long next_enum(enum_names *en, long l)
@@ -2409,30 +2466,6 @@ const char *bitnamesof(const char *const table[], lset_t val)
 	return bitnamesofb(table, val, bitnamesbuf, sizeof(bitnamesbuf));
 }
 
-size_t lswlog_enum_lset_short(struct lswlog *buf, enum_names *en, lset_t val)
-{
-	unsigned int e;
-
-	/* if nothing gets filled in, default to "none" rather than "" */
-	if (val == LEMPTY) {
-		return lswlogs(buf, "none");
-	}
-
-	size_t size = 0;
-	const char *sep = "";
-	for (e = 0; val != 0; e++) {
-		lset_t bit = LELEM(e);
-
-		if (val & bit) {
-			size += lswlogs(buf, sep);
-			sep = "+";
-			size += lswlog_enum_short(buf, en, e);
-			val -= bit;
-		}
-	}
-	return size;
-}
-
 /* test a set by seeing if all bits have names */
 bool testset(const char *const table[], lset_t val)
 {
@@ -2533,7 +2566,8 @@ static const enum_names *en_checklist[] = {
 	&ikev2_trans_type_esn_names,
 	&ikev2_trans_type_names,
 	&ikev2_trans_attr_descs,
-	&ppk_names,
+	&pkk_names,
+	&ikev2_ppk_id_names,
 };
 
 void check_enum_names(enum_names *checklist[], size_t tl)

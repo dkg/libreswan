@@ -7,13 +7,13 @@
  * Copyright (C) 2010 Michael Smith <msmith@cbnco.com>
  * Copyright (C) 2010 Tuomo Soini <tis@foobar.fi>
  * Copyright (C) 2012-2017 Paul Wouters <pwouters@redhat.com>
- * Copyright (C) 2012 Paul Wouters <paul@libreswan.org>
  * Copyright (C) 2012 Avesh Agarwal <avagarwa@redhat.com>
  * Copyright (C) 2012 Antony Antony <antony@phenome.org>
  * Copyright (C) 2013 Florian Weimer <fweimer@redhat.com>
  * Copyright (C) 2013 David McCullough <ucdevel@gmail.com>
  * Copyright (C) 2013 D. Hugh Redelmeier <hugh@mimosa.com>
- * Copyright (C) 2016, Andrew Cagney <cagney@gnu.org>
+ * Copyright (C) 2016 Andrew Cagney <cagney@gnu.org>
+ * Copyright (C) 2017 Vukasin Karadzic <vukasin.karadzic@gmail.com>
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -35,6 +35,7 @@
 #include <sys/queue.h>
 
 #include "lswalloc.h"
+#include "ip_address.h"
 
 #include "ipsecconf/confread.h"
 #include "ipsecconf/starterlog.h"
@@ -149,7 +150,7 @@ void ipsecconf_default_values(struct starter_config *cfg)
 		POLICY_IKEV1_ALLOW | POLICY_IKEV2_ALLOW |	/* ikev2=permit */
 		POLICY_SAREF_TRACK |         /* sareftrack=yes */
 		POLICY_IKE_FRAG_ALLOW |      /* ike_frag=yes */
-		POLICY_ESN_NO;      /* esn=no */
+		POLICY_ESN_NO;      	     /* esn=no */
 
 	cfg->conn_default.options[KBF_NIC_OFFLOAD] = nic_offload_auto;
 	cfg->conn_default.options[KBF_IKELIFETIME] = IKE_SA_LIFETIME_DEFAULT;
@@ -157,7 +158,7 @@ void ipsecconf_default_values(struct starter_config *cfg)
 	cfg->conn_default.options[KBF_REPLAY_WINDOW] = IPSEC_SA_DEFAULT_REPLAY_WINDOW;
 
 	cfg->conn_default.options[KBF_RETRANSMIT_TIMEOUT] = RETRANSMIT_TIMEOUT_DEFAULT;
-	cfg->conn_default.options[KBF_RETRANSMIT_INTERVAL] = RETRANSMIT_INTERVAL_DEFAULT;
+	cfg->conn_default.options[KBF_RETRANSMIT_INTERVAL_MS] = RETRANSMIT_INTERVAL_DEFAULT_MS;
 
 	cfg->conn_default.options[KBF_SALIFETIME] = IPSEC_SA_LIFETIME_DEFAULT;
 	cfg->conn_default.options[KBF_REKEYMARGIN] = SA_REPLACEMENT_MARGIN_DEFAULT;
@@ -344,6 +345,7 @@ static bool load_setup(struct starter_config *cfg,
 			break;
 
 		case kt_list:
+		case kt_lset:
 		case kt_bool:
 		case kt_invertbool:
 		case kt_enum:
@@ -576,10 +578,6 @@ static bool validate_end(struct starter_conn *conn_st,
 			end->nexttype = KH_IPADDR;
 		}
 	} else {
-#if 0
-		if (conn_st->policy & POLICY_OPPORTUNISTIC)
-			end->nexttype = KH_DEFAULTROUTE;
-#endif
 		anyaddr(family, &end->nexthop);
 
 		if (end->addrtype == KH_DEFAULTROUTE) {
@@ -902,6 +900,7 @@ static bool translate_conn(struct starter_conn *conn,
 			break;
 
 		case kt_list:
+		case kt_lset:
 		case kt_bool:
 		case kt_invertbool:
 		case kt_enum:
@@ -927,11 +926,6 @@ static bool translate_conn(struct starter_conn *conn,
 				/* ??? at this point, we have set *error but not err! */
 			}
 
-#if 0
-			starter_log(LOG_LEVEL_DEBUG, "#setting %s[%d]=%u",
-				    kw->keyword.keydef->keyname, field,
-				    kw->number);
-#endif
 			(*the_options)[field] = kw->number;
 			(*set_options)[field] = assigned_value;
 			break;
@@ -1222,8 +1216,13 @@ static bool load_conn(
 	KW_POLICY_FLAG(KBF_IKEv2_ALLOW_NARROWING,
 		       POLICY_IKEV2_ALLOW_NARROWING);
 
+	KW_POLICY_FLAG(KBF_MOBIKE, POLICY_MOBIKE);
+
 	KW_POLICY_FLAG(KBF_IKEv2_PAM_AUTHORIZE,
 		       POLICY_IKEV2_PAM_AUTHORIZE);
+
+	KW_POLICY_FLAG(KBF_DECAP_DSCP, POLICY_DECAP_DSCP);
+	KW_POLICY_FLAG(KBF_NOPMTUDISC, POLICY_NOPMTUDISC);
 
 #	define str_to_conn(member, kscf) { \
 		if (conn->strings_set[kscf]) \
@@ -1240,14 +1239,11 @@ static bool load_conn(
 #endif
 
 	str_to_conn(ike, KSCF_IKE);
-	str_to_conn(modecfg_dns1, KSCF_MODECFGDNS1);
-	str_to_conn(modecfg_dns2, KSCF_MODECFGDNS2);
-	str_to_conn(modecfg_domain, KSCF_MODECFGDOMAIN);
+	str_to_conn(modecfg_dns, KSCF_MODECFGDNS);
+	str_to_conn(modecfg_domains, KSCF_MODECFGDOMAINS);
 	str_to_conn(modecfg_banner, KSCF_MODECFGBANNER);
 
-	/* mark-in= and mark-out= override mark= */
-	str_to_conn(conn_mark_in, KSCF_CONN_MARK_BOTH);
-	str_to_conn(conn_mark_out, KSCF_CONN_MARK_BOTH);
+	str_to_conn(conn_mark_both, KSCF_CONN_MARK_BOTH);
 	str_to_conn(conn_mark_in, KSCF_CONN_MARK_IN);
 	str_to_conn(conn_mark_out, KSCF_CONN_MARK_OUT);
 	str_to_conn(vti_iface, KSCF_VTI_IFACE);
@@ -1283,6 +1279,30 @@ static bool load_conn(
 			break;
 		}
 		conn->policy = (conn->policy & ~POLICY_IKEV2_MASK) | pv2;
+	}
+
+	if (conn->options_set[KBF_PPK]) {
+		lset_t ppk = LEMPTY;
+
+		if (~(conn->policy & POLICY_IKEV1_ALLOW)) {
+			switch (conn->options[KBF_PPK]) {
+			case fo_propose:
+				ppk = POLICY_PPK_ALLOW;
+				break;
+
+			case fo_permit:
+				ppk = POLICY_PPK_ALLOW;
+				break;
+
+			case fo_insist:
+				ppk = POLICY_PPK_ALLOW | POLICY_PPK_INSIST;
+				break;
+
+			case fo_never:
+				break;
+			}
+		}
+		conn->policy = conn->policy | ppk;
 	}
 
 	if (conn->options_set[KBF_ESN]) {
@@ -1349,8 +1369,8 @@ static bool load_conn(
 	if (NEVER_NEGOTIATE(conn->policy)) {
 		/* remove IPsec related options */
 		conn->policy &= ~(POLICY_PFS | POLICY_COMPRESS | POLICY_ESN_NO |
-			POLICY_ESN_YES | POLICY_SAREF_TRACK |
-			POLICY_SAREF_TRACK_CONNTRACK) &
+			POLICY_ESN_YES | POLICY_SAREF_TRACK | POLICY_DECAP_DSCP |
+			POLICY_NOPMTUDISC | POLICY_SAREF_TRACK_CONNTRACK) &
 			/* remove IKE related options */
 			~(POLICY_IKEV1_ALLOW | POLICY_IKEV2_ALLOW |
 			POLICY_IKEV2_PROPOSE | POLICY_IKE_FRAG_ALLOW |
@@ -1414,9 +1434,8 @@ static void conn_default(struct starter_conn *conn,
 	conn->esp = clone_str(def->esp, "conn default esp");
 	conn->ike = clone_str(def->ike, "conn default ike");
 
-	conn->modecfg_dns1 = clone_str(def->modecfg_dns1, "conn default dns1");
-	conn->modecfg_dns2 = clone_str(def->modecfg_dns2, "conn default dns2");
-	conn->modecfg_domain = clone_str(def->modecfg_domain, "conn default domain");
+	conn->modecfg_dns = clone_str(def->modecfg_dns, "conn default dns");
+	conn->modecfg_domains = clone_str(def->modecfg_domains, "conn default domains");
 	conn->modecfg_banner = clone_str(def->modecfg_banner, "conn default banner");
 	conn->conn_mark_both = clone_str(def->conn_mark_both, "conn default conn_mark_both");
 	conn->conn_mark_in = clone_str(def->conn_mark_in, "conn default conn_mark_in");
@@ -1570,9 +1589,6 @@ static void confread_free_conn(struct starter_conn *conn)
 
 	pfreeany(conn->esp);
 	pfreeany(conn->ike);
-
-	pfreeany(conn->modecfg_dns1);
-	pfreeany(conn->modecfg_dns2);
 
 	pfreeany(conn->left.virt);
 	pfreeany(conn->right.virt);

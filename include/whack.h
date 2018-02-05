@@ -23,8 +23,9 @@
 #ifndef _WHACK_H
 #define _WHACK_H
 
-#include <libreswan.h>
 #include "ietf_constants.h"
+#include "lmod.h"
+#include "deltatime.h"
 
 /* Since the message remains on one host, native representation is used.
  * Think of this as horizontal microcode: all selected operations are
@@ -139,7 +140,8 @@ struct whack_message {
 
 	bool whack_options;
 
-	lset_t debugging;
+	lmod_t debugging;
+	lmod_t impairing;
 
 	/* for WHACK_CONNECTION */
 
@@ -154,7 +156,7 @@ struct whack_message {
 	unsigned long sa_keying_tries;
 	unsigned long sa_replay_window;
 	deltatime_t r_timeout; /* in secs */
-	unsigned long  r_interval; /* in msec */
+	deltatime_t r_interval; /* in msec */
 	enum nic_offload_options nic_offload;
 
 	/* For IKEv1 RFC 3706 - Dead Peer Detection */
@@ -183,7 +185,7 @@ struct whack_message {
 	 */
 	bool cisco_unity;
 
-	/* Option to send strongswan VID to allowe better interop */
+	/* Option to send strongswan VID to allow better interop */
 	bool fake_strongswan;
 
 	/* send our own libreswan vendorid or not */
@@ -234,10 +236,6 @@ struct whack_message {
 	char *keyid;	/* string 8 */
 	enum pubkey_alg pubkey_alg;
 	chunk_t keyval;	/* chunk */
-
-	/* for WHACK_MYID: */
-	bool whack_myid;
-	char *myid;	/* string 7 */
 
 	/* for REMOTE_HOST */
 	char *remote_host;
@@ -302,10 +300,9 @@ struct whack_message {
 	/* for connalias string */
 	char *connalias;
 
-	/* for MODECFG */
-	ip_address modecfg_dns1;
-	ip_address modecfg_dns2;
-	char *modecfg_domain;
+	/* for IKEv1 MODECFG and IKEv2 CP */
+	char *modecfg_dns;
+	char *modecfg_domains;
 	char *modecfg_banner;
 
 	char *conn_mark_both;
@@ -343,7 +340,7 @@ struct whack_message {
 	 * 12 right's updown
 	 * 13 right's virt
 	 * 14 keyid
-	 * 15 myid
+	 * 15 unused (was myid)
 	 * 16 ike
 	 * 17 esp
 	 * 18 left.username

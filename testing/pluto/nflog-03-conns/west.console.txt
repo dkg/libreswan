@@ -147,7 +147,7 @@ west #
 002 "westnet-eastnet-nflog": terminating SAs using this connection
 002 "westnet-eastnet-nflog": IKE SA is shared - only terminating IPsec SA
 002 "westnet-eastnet-nflog" #2: deleting state (STATE_QUICK_I2) and sending notification
-005 "westnet-eastnet-nflog" #2: ESP traffic information: in=0B out=0B
+005 "westnet-eastnet-nflog" #2: ESP traffic information: in=336B out=336B
 west #
  iptables -L -n
 Chain INPUT (policy ACCEPT)
@@ -168,7 +168,7 @@ west #
  ipsec auto --down west-east-nflog
 002 "west-east-nflog": terminating SAs using this connection
 002 "west-east-nflog" #3: deleting state (STATE_QUICK_I2) and sending notification
-005 "west-east-nflog" #3: ESP traffic information: in=0B out=0B
+005 "west-east-nflog" #3: ESP traffic information: in=336B out=336B
 west #
  iptables -L -n
 Chain INPUT (policy ACCEPT)
@@ -212,18 +212,6 @@ src 192.1.2.45/32 dst 192.1.2.23/32
 	dir out priority 2080 ptype main 
 	tmpl src 0.0.0.0 dst 0.0.0.0
 		proto esp reqid REQID mode transport
-src ::/0 dst ::/0 proto ipv6-icmp type 135 
-	dir fwd priority 1 ptype main 
-src ::/0 dst ::/0 proto ipv6-icmp type 135 
-	dir in priority 1 ptype main 
-src ::/0 dst ::/0 proto ipv6-icmp type 135 
-	dir out priority 1 ptype main 
-src ::/0 dst ::/0 proto ipv6-icmp type 136 
-	dir fwd priority 1 ptype main 
-src ::/0 dst ::/0 proto ipv6-icmp type 136 
-	dir in priority 1 ptype main 
-src ::/0 dst ::/0 proto ipv6-icmp type 136 
-	dir out priority 1 ptype main 
 XFRM done
 IPSEC mangle TABLES
 NEW_IPSEC_CONN mangle TABLES

@@ -5,12 +5,28 @@
 %global with_cavstests 1
 # There is no new enough unbound on rhel7
 %global with_dnssec 0
+# Libreswan config options
+%global libreswan_config \\\
+    FINALLIBEXECDIR=%{_libexecdir}/ipsec \\\
+    INC_RCDEFAULT=%{_initrddir} \\\
+    INC_USRLOCAL=%{_prefix} \\\
+    INITSYSTEM=systemd \\\
+    USE_DNSSEC=%{USE_DNSSEC} \\\
+    USE_FIPSCHECK=true \\\
+    USE_LABELED_IPSEC=true \\\
+    USE_LDAP=true \\\
+    USE_LIBCAP_NG=true \\\
+    USE_LIBCURL=true \\\
+    USE_NM=true \\\
+    USE_SECCOMP=true \\\
+    USE_XAUTHPAM=true \\\
+%{nil}
 
-#global prever rc1
+#global prever dr1
 
 Name: libreswan
 Summary: IPsec implementation with IKEv1 and IKEv2 keying protocols
-Version: 3.22
+Version: 3.23
 Release: %{?prever:0.}1%{?prever:.%{prever}}%{?dist}
 License: GPLv2
 Url: https://libreswan.org/
@@ -93,21 +109,7 @@ make %{?_smp_mflags} \
     USERCOMPILE="-g -DGCC_LINT %{optflags} %{?efence} -fPIE -pie -fno-strict-aliasing -Wformat-nonliteral -Wformat-security" \
 %endif
     USERLINK="-g -pie -Wl,-z,relro,-z,now %{?efence}" \
-    FINALLIBEXECDIR=%{_libexecdir}/ipsec \
-    FINALRUNDIR=%{_rundir}/pluto \
-    INC_RCDEFAULT=%{_initrddir} \
-    INC_USRLOCAL=%{_prefix} \
-    INITSYSTEM=systemd \
-    MANTREE=%{_mandir} \
-    USE_DNSSEC=%{USE_DNSSEC} \
-    USE_FIPSCHECK=true \
-    USE_LABELED_IPSEC=true \
-    USE_LDAP=true \
-    USE_LIBCAP_NG=true \
-    USE_LIBCURL=true \
-    USE_NM=true \
-    USE_SECCOMP=true \
-    USE_XAUTHPAM=true \
+    %{libreswan_config} \
     programs
 FS=$(pwd)
 
@@ -122,21 +124,7 @@ FS=$(pwd)
 %install
 make \
     DESTDIR=%{buildroot} \
-    FINALLIBEXECDIR=%{_libexecdir}/ipsec \
-    FINALRUNDIR=%{_rundir}/pluto \
-    INC_RCDEFAULT=%{_initrddir} \
-    INC_USRLOCAL=%{_prefix} \
-    INITSYSTEM=systemd \
-    MANTREE=%{buildroot}%{_mandir} \
-    USE_DNSSEC=%{USE_DNSSEC} \
-    USE_FIPSCHECK=true \
-    USE_LABELED_IPSEC=true \
-    USE_LDAP=true \
-    USE_LIBCAP_NG=true \
-    USE_LIBCURL=true \
-    USE_NM=true \
-    USE_SECCOMP=true \
-    USE_XAUTHPAM=true \
+    %{libreswan_config} \
     install
 FS=$(pwd)
 rm -rf %{buildroot}/usr/share/doc/libreswan
@@ -220,5 +208,5 @@ prelink -u %{_libexecdir}/ipsec/* 2>/dev/null || :
 %{_sysconfdir}/prelink.conf.d/libreswan-fips.conf
 
 %changelog
-* Sun Oct 22 2017 Team Libreswan <team@libreswan.org> - 3.22-1
+* Thu Jan 25 2018 Team Libreswan <team@libreswan.org> - 3.23-1
 - Automated build from release tar ball

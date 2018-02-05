@@ -98,6 +98,8 @@
 #endif
 
 #include "pluto_stats.h"
+#include "hash_table.h"
+#include "ip_address.h"
 
 /*
  *  Server main loop and socket initialization routines.
@@ -199,7 +201,7 @@ enum seccomp_mode pluto_seccomp_mode = SECCOMP_DISABLED;
 #endif
 unsigned int pluto_max_halfopen = DEFAULT_MAXIMUM_HALFOPEN_IKE_SA;
 unsigned int pluto_ddos_threshold = DEFAULT_IKE_SA_DDOS_THRESHOLD;
-deltatime_t pluto_shunt_lifetime = { PLUTO_SHUNT_LIFE_DURATION_DEFAULT };
+deltatime_t pluto_shunt_lifetime = DELTATIME(PLUTO_SHUNT_LIFE_DURATION_DEFAULT);
 
 unsigned int pluto_sock_bufsize = IKE_BUF_AUTO; /* use system values */
 bool pluto_sock_errqueue = TRUE; /* Enable MSG_ERRQUEUE on IKE socket */
@@ -299,7 +301,7 @@ int create_socket(struct raw_iface *ifp, const char *v_name, int port)
 	static const int so_prio = 6; /* rumored maximum priority, might be 7 on linux? */
 
 	if (fd < 0) {
-		LOG_ERRNO(errno, "socket() in process_raw_ifaces()");
+		LOG_ERRNO(errno, "socket() in create_socket()");
 		return -1;
 	}
 
@@ -307,7 +309,9 @@ int create_socket(struct raw_iface *ifp, const char *v_name, int port)
 	if ((fcntl_flags = fcntl(fd, F_GETFL)) >= 0) {
 		if (!(fcntl_flags & O_NONBLOCK)) {
 			fcntl_flags |= O_NONBLOCK;
-			fcntl(fd, F_SETFL, fcntl_flags);
+			if (fcntl(fd, F_SETFL, fcntl_flags) == -1) {
+				LOG_ERRNO(errno, "fcntl(,, O_NONBLOCK) in create_socket()");
+			}
 		}
 	}
 
@@ -441,7 +445,9 @@ int create_socket(struct raw_iface *ifp, const char *v_name, int port)
 
 #if defined(HAVE_UDPFROMTO)
 	/* we are going to use udpfromto.c, so initialize it */
-	udpfromto_init(fd);
+	if (udpfromto_init(fd) == -1) {
+		LOG_ERRNO(errno, "udpfromto_init() returned an error - ignored");
+	}
 #endif
 
 	/* poke a hole for IKE messages in the IPsec layer */
@@ -470,7 +476,6 @@ static struct pluto_event *free_event_entry(struct pluto_event **evp)
 			const char *en = enum_name(&timer_event_names, e->ev_type);
 			DBG_log("%s: release %s-pe@%p", __func__, en, e));
 
-	pfreeany(e->ev_name);
 	pfree(e);
 	*evp = NULL;
 	return next;
@@ -513,20 +518,96 @@ void delete_pluto_event(struct pluto_event **evp)
 }
 
 /*
- * a wrapper for libevent's event_new + event_add; any error is fatal
- * If you're looking for how to set up a timer look at pluto_event_add
+ * A wrapper for libevent's event_new + event_add; any error is fatal.
+ *
+ * When setting up an event, this must be called last.  Else the event
+ * can fire before setting it up has finished.
  */
-static struct event *pluto_event_wraper(evutil_socket_t fd, short events,
-				     event_callback_fn cb, void *arg,
-				     const struct timeval *t)
+
+static void fire_event_photon_torpedo(struct event **evp,
+				      evutil_socket_t fd, short events,
+				      event_callback_fn cb, void *arg,
+				      const deltatime_t *delay)
 {
 	struct event *ev = event_new(pluto_eb, fd, events, cb, arg);
-	int r;
-
 	passert(ev != NULL);
-	r = event_add(ev, t);
+	/*
+	 * EV must be saved in its final destination before the event
+	 * is enabled.
+	 *
+	 * Otherwise the event on the main thread will try to use the
+	 * saved EV before it has been saved by the helper thread.
+	 */
+	*evp = ev;
+
+	int r;
+	if (delay == NULL) {
+		r = event_add(ev, NULL);
+	} else {
+		struct timeval t = deltatimeval(*delay);
+		r = event_add(ev, &t);
+	}
 	passert(r >= 0);
-	return ev;
+}
+
+/*
+ * Schedule an event now.
+ *
+ * Unlike pluto_event_add(), it can't be canceled, can only run once,
+ * doesn't show up in the event list, and leaks when the event-loop
+ * aborts (like a few others).
+ *
+ * However, unlike pluto_event_add(), it works from any thread, and
+ * cleans up after the event has run.
+ */
+
+struct now_event {
+	void (*ne_cb)(void*);
+	void *ne_arg;
+	const char *ne_name;
+	struct event *ne_event;
+};
+
+static void schedule_event_now_cb(evutil_socket_t fd UNUSED,
+				  short events UNUSED,
+				  void *arg)
+{
+	struct now_event *ne = (struct now_event *)arg;
+	DBG(DBG_CONTROLMORE,
+	    DBG_log("executing now-event %s", ne->ne_name));
+
+	/*
+	 * At one point, .ne_event was was being set after the event
+	 * was enabled.  With multiple threads this resulted in a race
+	 * where the event ran before .ne_event was set.  The
+	 * pexpect() followed by the passert() demonstrated this - the
+	 * pexpect() failed yet the passert() passed.
+	 */
+	pexpect(ne->ne_event != NULL);
+	ne->ne_cb(ne->ne_arg);
+	passert(ne->ne_event != NULL);
+
+	event_del(ne->ne_event);
+	pfree(ne);
+}
+
+void pluto_event_now(const char *name, void (*cb)(void*), void*arg)
+{
+	DBG(DBG_CONTROLMORE,
+	    DBG_log("scheduling now-event %s", name));
+	struct now_event *ne = alloc_thing(struct now_event, name);
+	ne->ne_cb = cb;
+	ne->ne_arg = arg;
+	ne->ne_name = name;
+	static const deltatime_t no_delay = DELTATIME(0);
+	/*
+	 * Everything set up; arm and fire torpedo.  Event may have
+	 * even run before the below function returns.
+	 */
+	fire_event_photon_torpedo(&ne->ne_event,
+				  NULL_FD, EV_TIMEOUT,
+				  schedule_event_now_cb, ne,
+				  &no_delay);
 }
 
 /*
@@ -534,26 +615,27 @@ static struct event *pluto_event_wraper(evutil_socket_t fd, short events,
  * looking for how to set up a timer, then don't look here and don't
  * look at timer.c.  Why?
  */
-struct event *timer_private_pluto_event_new(evutil_socket_t fd, short events,
-					    event_callback_fn cb, void *arg,
-					    const struct timeval *t)
+void timer_private_pluto_event_new(struct event **evp,
+				   evutil_socket_t fd, short events,
+				   event_callback_fn cb, void *arg,
+				   deltatime_t delay)
 {
-	return pluto_event_wraper(fd, events, cb, arg, t);
+	fire_event_photon_torpedo(evp, fd, events, cb, arg, &delay);
 }
 
-
 struct pluto_event *pluto_event_add(evutil_socket_t fd, short events,
-		event_callback_fn cb, void *arg, const struct timeval *delay,
-		char *name) {
+				    event_callback_fn cb, void *arg,
+				    const deltatime_t *delay,
+				    const char *name)
+{
 	struct pluto_event *e = alloc_thing(struct pluto_event, name);
 	e->ev_type = EVENT_NULL;
-	e->ev_name = clone_str(name, "event name");
-	e->ev = pluto_event_wraper(fd, events, cb, arg, delay);
+	e->ev_name = name;
 	link_pluto_event_list(e);
-	if (delay != NULL)
-	{
-		e->ev_time = monotimesum(mononow(), deltatime(delay->tv_sec));
+	if (delay != NULL) {
+		e->ev_time = monotimesum(mononow(), *delay);
 	}
+	fire_event_photon_torpedo(&e->ev, fd, events, cb, arg, delay);
 	return e; /* compaitable with pluto_event_new for the time being */
 }
 
@@ -574,8 +656,8 @@ void timer_list(void)
 
 	nw = mononow();
 
-	whack_log(RC_LOG, "It is now: %ld seconds since monotonic epoch",
-		(unsigned long)nw.mono_secs);
+	whack_log(RC_LOG, "It is now: %jd seconds since monotonic epoch",
+		  monosecs(nw));
 
 	while (ev != NULL) {
 		struct state *st = ev->ev_state;
@@ -583,8 +665,8 @@ void timer_list(void)
 
 		if (ev->ev_type != EVENT_NULL) {
 			snprintf(buf, sizeof(buf), "schd: %jd (in %jds)",
-					(intmax_t)ev->ev_time.mono_secs,
-					(intmax_t)deltasecs(monotimediff(ev->ev_time, nw)));
+				 monosecs(ev->ev_time),
+				 deltasecs(monotimediff(ev->ev_time, nw)));
 		}
 
 		if (st != NULL && st->st_connection != NULL) {
@@ -603,11 +685,12 @@ void timer_list(void)
 	}
 }
 
-void find_ifaces(void)
+void find_ifaces(bool rm_dead)
 {
 	struct iface_port *ifp;
 
-	mark_ifaces_dead();
+	if (rm_dead)
+		mark_ifaces_dead();
 
 	if (kernel_ops->process_ifaces != NULL) {
 #if !defined(__CYGWIN32__)
@@ -617,7 +700,8 @@ void find_ifaces(void)
 		kernel_ops->process_ifaces(static_ifn);
 	}
 
-	free_dead_ifaces(); /* ditch remaining old entries */
+	if (rm_dead)
+		free_dead_ifaces(); /* ditch remaining old entries */
 
 	if (interfaces == NULL)
 		loglog(RC_LOG_SERIOUS, "no public interfaces found");
@@ -645,6 +729,17 @@ void find_ifaces(void)
 	}
 }
 
+struct iface_port *lookup_iface_ip(ip_address *ip, u_int16_t port)
+{
+	struct iface_port *p;
+	for (p = interfaces; p != NULL; p = p->next) {
+		if (sameaddr(ip, &p->ip_addr) && (p->port == port))
+			return p;
+	}
+
+	return NULL;
+}
+
 void show_ifaces_status(void)
 {
 	struct iface_port *p;
@@ -664,7 +759,7 @@ void show_debug_status(void)
 	LSWLOG_WHACK(RC_COMMENT, buf) {
 		lswlogs(buf, "debug ");
 		lswlog_enum_lset_short(buf, &debug_and_impair_names,
-				       cur_debugging);
+				       "+", cur_debugging);
 	}
 }
 
@@ -706,6 +801,81 @@ static void syshandler_cb(int unused UNUSED, const short event UNUSED, void *arg
 }
 #endif
 
+#define PID_MAGIC 0x000f000cUL
+
+struct pid_entry {
+	unsigned long magic;
+	struct list_entry hash_entry;
+	pid_t pid;
+	void *context;
+	void (*callback)(int status, void *context);
+};
+
+static size_t log_pid_entry(struct lswlog *buf, void *data)
+{
+	if (data == NULL) {
+		return lswlogs(buf, "NULL pid");
+	} else {
+		struct pid_entry *entry = (struct pid_entry*)data;
+		passert(entry->magic == PID_MAGIC);
+		return lswlogf(buf, "pid %d", entry->pid);
+	}
+}
+
+static size_t hash_pid_entry(void *data)
+{
+	struct pid_entry *entry = (struct pid_entry*)data;
+	passert(entry->magic == PID_MAGIC);
+	return entry->pid;
+}
+
+static struct list_head pid_entry_slots[23];
+
+static struct hash_table pids_hash_table = {
+	.info = {
+		.debug = DBG_CONTROLMORE,
+		.name = "pid table",
+		.log = log_pid_entry,
+	},
+	.hash = hash_pid_entry,
+	.nr_slots = elemsof(pid_entry_slots),
+	.slots = pid_entry_slots,
+};
+
+static void add_pid(pid_t pid,
+		    void (*callback)(int status, void *context),
+		    void *context)
+{
+	DBG(DBG_CONTROL,
+	    DBG_log("forked child %d", pid));
+	struct pid_entry *new_pid = alloc_thing(struct pid_entry, "fork pid");
+	new_pid->magic = PID_MAGIC;
+	new_pid->pid = pid;
+	new_pid->callback = callback;
+	new_pid->context = context;
+	add_hash_table_entry(&pids_hash_table,
+			     new_pid, &new_pid->hash_entry);
+}
+
+int pluto_fork(int op(void *context),
+	       void (*callback)(int status, void *context),
+	       void *context)
+{
+	pid_t pid = fork();
+	switch (pid) {
+	case -1:
+		LOG_ERRNO(errno, "fork failed");
+		return -1;
+	case 0: /* child */
+		reset_globals();
+		exit(op(context));
+		break;
+	default: /* parent */
+		add_pid(pid, callback, context);
+		return pid;
+	}
+}
+
 static void addconn_exited(int status, void *context UNUSED)
 {
        DBG(DBG_CONTROLMORE,
@@ -715,29 +885,30 @@ static void addconn_exited(int status, void *context UNUSED)
 
 static void log_status(struct lswlog *buf, int status)
 {
-	lswlogf(buf, "status %x ", status);
+	lswlogf(buf, " (");
 	if (WIFEXITED(status)) {
-		lswlogf(buf, "exit status %u",
+		lswlogf(buf, "exited with status %u",
 			WEXITSTATUS(status));
 	} else if (WIFSIGNALED(status)) {
-		lswlogf(buf, "term signal %s (%d)",
+		lswlogf(buf, "terminated with signal %s (%d)",
 			strsignal(WTERMSIG(status)),
 			WTERMSIG(status));
 	} else if (WIFSTOPPED(status)) {
 		/* should not happen */
-		lswlogf(buf, "stop signal %s (%d) but WUNTRACED not specified",
+		lswlogf(buf, "stopped with signal %s (%d) but WUNTRACED not specified",
 			strsignal(WSTOPSIG(status)),
 			WSTOPSIG(status));
 	} else if (WIFCONTINUED(status)) {
 		lswlogf(buf, "continued");
 	} else {
-		lswlogf(buf, "not recognized!");
+		lswlogf(buf, "wait status %x not recognized!", status);
 	}
 #ifdef WCOREDUMP
 	if (WCOREDUMP(status)) {
-		lswlogs(buf, " (core dumped)");
+		lswlogs(buf, ", core dumped");
 	}
 #endif
+	lswlogs(buf, ")");
 }
 
 static void childhandler_cb(int unused UNUSED, const short event UNUSED, void *arg UNUSED)
@@ -750,29 +921,39 @@ static void childhandler_cb(int unused UNUSED, const short event UNUSED, void *a
 		case -1: /* error? */
 			if (errno == ECHILD) {
 				DBG(DBG_CONTROLMORE,
-				    DBG_log("waitpid returned no more children"));
+				    DBG_log("waitpid returned ECHILD (no child processes left)"));
 			} else {
 				LOG_ERRNO(errno, "waitpid unexpectedly failed");
 			}
 			return;
 		case 0: /* nothing to do */
 			DBG(DBG_CONTROLMORE,
-			    DBG_log("waitpid returned nothing left to do (but children still running)"));
+			    DBG_log("waitpid returned nothing left to do (all child processes are busy)"));
 			return;
 		default:
 			LSWDBGP(DBG_CONTROLMORE, buf) {
-				lswlogf(buf, "waitpid returned pid %d - ",
+				lswlogf(buf, "waitpid returned pid %d",
 					child);
 				log_status(buf, status);
 			}
-			if (addconn_child_pid != 0 && addconn_child_pid == child) {
-				addconn_exited(status, NULL);
-			} else {
+			struct pid_entry *pid_entry = NULL;
+			struct list_head *head = hash_table_slot_by_hash(&pids_hash_table, child);
+			FOR_EACH_LIST_ENTRY_OLD2NEW(head, pid_entry) {
+				passert(pid_entry->magic == PID_MAGIC);
+				if (pid_entry->pid == child) {
+					break;
+				}
+			}
+			if (pid_entry == NULL) {
 				LSWLOG(buf) {
-					lswlogf(buf, "waitpid return unknown child pid %d - ",
+					lswlogf(buf, "waitpid return unknown child pid %d",
 						child);
 					log_status(buf, status);
 				}
+			} else {
+				pid_entry->callback(status, pid_entry->context);
+				del_hash_table_entry(&pids_hash_table, &pid_entry->hash_entry);
+				pfree(pid_entry);
 			}
 			break;
 		}
@@ -801,6 +982,8 @@ void init_event_base(void) {
  */
 void call_server(void)
 {
+	init_hash_table(&pids_hash_table);
+
 	/*
 	 * setup basic events, CTL and SIGNALs
 	 */
@@ -828,51 +1011,57 @@ void call_server(void)
 
 	/*
 	 * fork to issue the command "ipsec addconn --autoall"
-	 * (or vfork() when fork() isn't available, eg on embedded platforms
-	 * without MMU, like uClibc
+	 * (or vfork() when fork() isn't available, eg. on embedded platforms
+	 * without MMU, like uClibc)
 	 */
 	{
 		/* find a pathname to the addconn program */
-		const char *addconn_path = NULL;
 		static const char addconn_name[] = "addconn";
 		char addconn_path_space[4096]; /* plenty long? */
-		ssize_t n = 0;
+		ssize_t n;
 
 #if !(defined(macintosh) || (defined(__MACH__) && defined(__APPLE__)))
-		{
-			/* The program will be in the same directory as Pluto,
-			 * so we use the sympolic link /proc/self/exe to
-			 * tell us of the path prefix.
-			 */
-			n = readlink("/proc/self/exe", addconn_path_space,
-				     sizeof(addconn_path_space));
-			if (n < 0) {
+		/*
+		 * The program will be in the same directory as Pluto,
+		 * so we use the symbolic link /proc/self/exe to
+		 * tell us of the path prefix.
+		 */
+		n = readlink("/proc/self/exe", addconn_path_space,
+			     sizeof(addconn_path_space));
+		if (n < 0) {
 # ifdef __uClibc__
-				/* on some nommu we have no proc/self/exe, try without path */
-				*addconn_path_space = '\0';
-				n = 0;
+			/*
+			 * Some noMMU systems have no proc/self/exe.
+			 * Try without path.
+			 */
+			n = 0;
 # else
-				EXIT_LOG_ERRNO(errno,
-					       "readlink(\"/proc/self/exe\") failed in call_server()");
+			EXIT_LOG_ERRNO(errno,
+				       "readlink(\"/proc/self/exe\") failed in call_server()");
 # endif
-			}
 		}
 #else
-		/* This is wrong. Should end up in a resource_dir on MacOSX -- Paul */
-		addconn_path = "/usr/local/libexec/ipsec/addconn";
+		/* Hardwire a path */
+		/* ??? This is wrong. Should end up in a resource_dir on MacOSX -- Paul */
+		n = jam_str(addconn_path_space,
+				sizeof(addconn_path_space),
+				"/usr/local/libexec/ipsec/") -
+			addcon_path_space;
 #endif
-		if ((size_t)n > sizeof(addconn_path_space) -
-		    sizeof(addconn_name))
-			exit_log("path to %s is too long", addconn_name);
+
+		/* strip any final name from addconn_path_space */
 		while (n > 0 && addconn_path_space[n - 1] != '/')
 			n--;
 
-		strcpy(addconn_path_space + n, addconn_name);
-		addconn_path = addconn_path_space;
+		if ((size_t)n >
+		    sizeof(addconn_path_space) - sizeof(addconn_name))
+			exit_log("path to %s is too long", addconn_name);
 
-		if (access(addconn_path, X_OK) < 0)
+		strcpy(addconn_path_space + n, addconn_name);
+
+		if (access(addconn_path_space, X_OK) < 0)
 			EXIT_LOG_ERRNO(errno, "%s missing or not executable",
-				       addconn_path);
+				       addconn_path_space);
 
 		char *newargv[] = { DISCARD_CONST(char *, "addconn"),
 				    DISCARD_CONST(char *, "--ctlsocket"),
@@ -888,24 +1077,30 @@ void call_server(void)
 #endif
 		if (addconn_child_pid == 0) {
 			/*
-			 * child
+			 * Child
 			 *
-			 * Note that, when vfork() was used, calls
-			 * like sleep() and DBG_log() are not valid.
-			 *
-			 * XXX: Why the sleep?
+			 * Note: when vfork() is used, calls
+			 * like sleep() and DBG_log() are not valid
+			 * before the exec* call.
 			 */
 #if USE_FORK
+			/* XXX: Why the sleep?  See 1987ac98f8.  Hack! */
 			sleep(1);
 #endif
-			execve(addconn_path, newargv, newenv);
+			execve(addconn_path_space, newargv, newenv);
 			_exit(42);
 		}
+
+		/* Parent */
+
 		DBG(DBG_CONTROLMORE,
 		    DBG_log("created addconn helper (pid:%d) using %s+execve",
 			    addconn_child_pid, USE_VFORK ? "vfork" : "fork"));
-		/* parent continues */
+		add_pid(addconn_child_pid, addconn_exited, NULL);
 	}
+
+	/* parent continues */
+
 #ifdef HAVE_SECCOMP
 	switch (pluto_seccomp_mode) {
 	case SECCOMP_ENABLED:
@@ -1027,6 +1222,11 @@ bool check_msg_errqueue(const struct iface_port *ifp, short interest, const char
 
 		if (packet_len == -1) {
 			if (errno == EAGAIN) {
+				/* 32 is picked from thin air */
+				if (again_count == 32) {
+					loglog(RC_LOG_SERIOUS, "recvmsg(,, MSG_ERRQUEUE): given up reading socket after 32 EAGAIN errors");
+					return FALSE;
+				}
 				again_count++;
 				LOG_ERRNO(errno,
 					  "recvmsg(,, MSG_ERRQUEUE) on %s failed (noticed before %s) (attempt %d)",
@@ -1204,39 +1404,26 @@ bool check_msg_errqueue(const struct iface_port *ifp, short interest, const char
 					 * explicit parameter to the
 					 * logging system?
 					 */
-#define LOG_SENDER(LOG, SENDER)						\
-					struct state *old_state = cur_state; \
-					struct connection *old_connection = cur_connection; \
-					const ip_address *old_from = cur_from; \
-					cur_state = SENDER;		\
-					cur_connection = NULL;		\
-					cur_from = NULL;		\
-					LOG("ERROR: asynchronous network error report on %s (sport=%d)%s, complainant %s: %s [errno %lu, origin %s]", \
-					    ifp->ip_dev->id_rname, ifp->port, \
-					    fromstr,			\
-					    offstr,			\
-					    strerror(ee->ee_errno),	\
-					    (unsigned long) ee->ee_errno, orname); \
-					cur_state = old_state;		\
-					cur_connection = old_connection; \
-					cur_from = old_from;
-					/* */
-					LOG_SENDER(libreswan_log, sender);
-				} else if (DBGP(DBG_OPPO)) {
+#define LOG(buf)	lswlogf(buf, "ERROR: asynchronous network error report on %s (sport=%d)%s, complainant %s: %s [errno %lu, origin %s]", \
+				ifp->ip_dev->id_rname, ifp->port,	\
+				fromstr,				\
+				offstr,					\
+				strerror(ee->ee_errno),			\
+				(unsigned long) ee->ee_errno, orname);
+
+					LSWLOG_STATE(sender, buf) {
+						LOG(buf);
+					}
+				} else {
 					/*
 					 * Since this output is forced
 					 * using DBGP, report the
 					 * error using debug-log.
-					 *
-					 * Since DBG_log() doesn't add
-					 * a prefix for the current
-					 * state et.al., the above
-					 * switch hack isn't needed.
-					 * However, do it anyway, so
-					 * that there is no confusion.
 					 */
-					LOG_SENDER(DBG_log, sender);
-#undef LOG_SENDER
+					LSWDBGP_STATE(DBG_OPPO, sender, buf) {
+						LOG(buf);
+					}
+#undef LOG
 				}
 			} else if (cm->cmsg_level == SOL_IP &&
 				   cm->cmsg_type == IP_PKTINFO) {
@@ -1345,7 +1532,7 @@ static bool send_packet(struct state *st, const char *where,
 			where,
 			st->st_interface->ip_dev->id_rname,
 			st->st_interface->port,
-			log_ip ? ipstr(&st->st_remoteaddr, &b) : "<ip>",
+			sensitive_ipstr(&st->st_remoteaddr, &b),
 			st->st_remoteport,
 			st->st_serialno);
 	});
@@ -1368,7 +1555,7 @@ static bool send_packet(struct state *st, const char *where,
 			ipstr_buf b;
 			LOG_ERRNO(errno, "sendto on %s to %s:%u failed in %s",
 				  st->st_interface->ip_dev->id_rname,
-				  log_ip ? ipstr(&st->st_remoteaddr, &b) : "<ip>",
+				  sensitive_ipstr(&st->st_remoteaddr, &b),
 				  st->st_remoteport,
 				  where);
 		}
@@ -1634,7 +1821,7 @@ bool resend_ike_v1_msg(struct state *st, const char *where)
 	if (st->st_state == STATE_XAUTH_R0 &&
 	    !LIN(POLICY_AGGRESSIVE, st->st_connection->policy)) {
 		/* Only for Main mode + XAUTH */
-		event_schedule_ms(EVENT_v1_SEND_XAUTH, EVENT_v1_SEND_XAUTH_DELAY, st);
+		event_schedule(EVENT_v1_SEND_XAUTH, deltatime_ms(EVENT_v1_SEND_XAUTH_DELAY_MS), st);
 	}
 
 	return ret;

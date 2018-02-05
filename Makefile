@@ -28,6 +28,7 @@ SRCDIR?=$(shell pwd)/
 
 # dummy default rule
 def help:
+	@echo
 	@echo "To build and install on a recent Linux kernel that has NETKEY:"
 	@echo
 	@echo "   make all && sudo make install"
@@ -41,6 +42,8 @@ def help:
 	@echo
 	@echo "To build debian packages: make deb"
 	@echo "To build fedora/rhel/centos rpms, see packaging/"
+	@echo
+	@false
 
 .PHONY: def help
 
@@ -593,7 +596,7 @@ showversion:
 showdebversion:
 	@echo ${IPSECVERSION} |  sed "s/^v//" | sed -e "s/\([0-9]\{1,3\}\)\.\([0-9]\{1,3\}\)\(.*\)/\1.\2~\3/" | sed "s/~-/~/"
 showrpmversion:
-	@echo ${IPSECVERSION} |  sed "s/^v//" | sed -e "s/\([0-9]\{1,3\}\)\.\([0-9]\{1,3\}\)\(.*\)/\1.\2_\3/" | sed "s/-/_/g"
+	@echo ${IPSECVERSION} |  sed "s/^v//" | sed -e "s/^v//;s/\([0-9]\{1,3\}\)\.\([0-9]\{1,3\}\)\(.*\)/\1.\2_\3/;s/-/_/g;s/__/_/g"
 showrpmrelease:
 	@echo ${IPSECVERSION} | sed "s/^v//" | sed "s/^[^-]*-\(.*\)/\1/"
 showobjdir:
@@ -603,8 +606,11 @@ showobjdir:
 
 deb:
 	cp -r packaging/debian .
-	sed -i "s/@IPSECBASEVERSION@/`make -s showdebversion`/g" debian/changelog
+	grep "@IPSECBASEVERSION@" debian/changelog || \
+		echo "no @IPSECBASEVERSION@ in debian/changelog" && \
+		sed -i "s/@IPSECBASEVERSION@/`make -s showdebversion`/g" debian/changelog
 	debuild -i -us -uc -b
+	rm -fr debian
 	#debuild -S -sa
 	@echo "to build optional KLIPS kernel module, run make deb-klips"
 
@@ -655,5 +661,6 @@ local-install:
 install-fipshmac:
 	fipshmac $(LIBEXECDIR)/pluto
 
+include ${LIBRESWANSRCDIR}/mk/docker-targets.mk
 include ${LIBRESWANSRCDIR}/mk/kvm-targets.mk
 include ${LIBRESWANSRCDIR}/mk/web-targets.mk

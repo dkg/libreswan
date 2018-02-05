@@ -69,14 +69,13 @@ struct msg_digest {
 	chunk_t raw_packet;			/* (v1) if encrypted, received packet before decryption */
 	const struct iface_port *iface;		/* interface on which message arrived */
 	ip_address sender;			/* where message came from (network order) */
-	u_int16_t sender_port;			/* host order */
 	pb_stream packet_pbs;			/* whole packet */
 	pb_stream message_pbs;			/* message to be processed */
 	pb_stream clr_pbs;			/* (v2) decrypted packet (within v2E payload) */
 	struct isakmp_hdr hdr;			/* message's header */
 	bool encrypted;				/* (v1) was it encrypted? */
 	enum state_kind from_state;		/* state we started in */
-	const struct state_microcode *smc;	/* (v1) microcode for initial state */
+	const struct state_v1_microcode *smc;	/* (v1) microcode for initial state */
 	const struct state_v2_microcode *svm;	/* (v2) microcode for initial state */
 	bool new_iv_set;			/* (v1) */
 	struct state *st;			/* current state object */
@@ -84,7 +83,6 @@ struct msg_digest {
 	enum original_role original_role;	/* (v2) */
 	msgid_t msgid_received;			/* (v2) - Host order! */
 
-	pb_stream rbody;			/* room for reply body (after header) */
 	notification_t note;			/* reason for failure */
 	bool dpd;				/* (v1) Peer supports RFC 3706 DPD */
 	bool ikev2;				/* Peer supports IKEv2 */
@@ -107,11 +105,11 @@ struct msg_digest {
 	struct isakmp_quirks quirks;
 };
 
-extern struct msg_digest *alloc_md(char *mdname);
+extern struct msg_digest *alloc_md(const char *mdname);
 extern void release_md(struct msg_digest *md);
 extern void release_any_md(struct msg_digest **mdp);
 
-typedef stf_status state_transition_fn(struct msg_digest *md);
+typedef stf_status state_transition_fn(struct state *st, struct msg_digest *md);
 
 extern void fmt_ipsec_sa_established(struct state *st,
 				     char *sadetails, size_t sad_len);
@@ -122,5 +120,7 @@ extern void free_md_pool(void);
 
 extern void process_packet(struct msg_digest **mdp);
 extern bool check_msg_errqueue(const struct iface_port *ifp, short interest, const char *before);
+
+extern char *cisco_stringify(pb_stream *pbs, const char *attr_name);
 
 #endif /* _DEMUX_H */

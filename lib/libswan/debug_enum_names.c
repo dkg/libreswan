@@ -17,6 +17,7 @@
 
 #include "constants.h"
 #include "enum_names.h"
+#include "lmod.h"
 
 /*
  * See plutomain.c for what the extra "\0" is all about (hint it is a
@@ -40,9 +41,12 @@ static const char *debug_strings[] = {
 	D(DBG_NATT, "debug-nattraversal"),
 	D(DBG_X509, "debug-x509"),
 	D(DBG_DPD, "debug-dpd"),
+	D(DBG_XAUTH, "debug-xauth"),
+	D(DBG_RETRANSMITS, "debug-retransmits"),
 	D(DBG_OPPOINFO, "debug-oppoinfo"),
 	D(DBG_WHACKWATCH, "debug-whackwatch"),
 	D(DBG_PRIVATE, "debug-private"),
+	D(DBG_ADD_PREFIX, "debug-add-prefix"),
 };
 
 const struct enum_names debug_names = {
@@ -52,11 +56,25 @@ const struct enum_names debug_names = {
 	NULL,
 };
 
+struct lmod_compat debug_compat[] = {
+       { "klips",    DBG_KERNEL },
+       { "netkey",    DBG_KERNEL },
+       { NULL, LEMPTY, },
+};
+
+const struct lmod_info debug_lmod_info = {
+	.names = &debug_names,
+	.all = DBG_ALL,
+	.mask = DBG_MASK,
+	.compat = debug_compat,
+};
+
 #define I(N,A) [N##_IX - DBG_roof_IX] = LELEM(N##_IX) == N ? A "\0" : NULL
 
 static const char *impair_strings[] = {
 	I(IMPAIR_BUST_MI2, "impair-bust-mi2"),
 	I(IMPAIR_BUST_MR2, "impair-bust-mr2"),
+	I(IMPAIR_DROP_I2, "impair-drop-i2"),
 	I(IMPAIR_SA_CREATION, "impair-sa-creation"),
 	I(IMPAIR_DIE_ONINFO, "impair-die-oninfo"),
 	I(IMPAIR_JACOB_TWO_TWO, "impair-jacob-two-two"),
@@ -64,6 +82,7 @@ static const char *impair_strings[] = {
 	I(IMPAIR_MAJOR_VERSION_BUMP, "impair-major-version-bump"),
 	I(IMPAIR_MINOR_VERSION_BUMP, "impair-minor-version-bump"),
 	I(IMPAIR_RETRANSMITS, "impair-retransmits"),
+	I(IMPAIR_SEND_NO_RETRANSMITS, "impair-send-no-retransmits"),
 	I(IMPAIR_SEND_BOGUS_PAYLOAD_FLAG, "impair-send-bogus-payload-flag"),
 	I(IMPAIR_SEND_BOGUS_ISAKMP_FLAG, "impair-send-bogus-isakmp-flag"),
 	I(IMPAIR_SEND_IKEv2_KE, "impair-send-ikev2-ke"),
@@ -81,6 +100,9 @@ static const char *impair_strings[] = {
 	I(IMPAIR_IGNORE_HASH_NOTIFY_RESPONSE, "impair-ignore-hash-notify-resp"),
 	I(IMPAIR_IKEv2_EXCLUDE_INTEG_NONE, "impair-ikev2-exclude-integ-none"),
 	I(IMPAIR_IKEv2_INCLUDE_INTEG_NONE, "impair-ikev2-include-integ-none"),
+	I(IMPAIR_REPLAY_DUPLICATES, "impair-replay-duplicates"),
+	I(IMPAIR_REPLAY_FORWARD, "impair-replay-forward"),
+	I(IMPAIR_REPLAY_BACKWARD, "impair-replay-backward"),
 };
 
 const struct enum_names impair_names = {
@@ -88,6 +110,12 @@ const struct enum_names impair_names = {
 	ARRAY_REF(impair_strings),
 	"impair-",
 	NULL,
+};
+
+const struct lmod_info impair_lmod_info = {
+	.names = &impair_names,
+	.all = IMPAIR_MASK,
+	.mask = IMPAIR_MASK,
 };
 
 const struct enum_names debug_and_impair_names = {

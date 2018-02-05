@@ -45,30 +45,50 @@ OBJS += addrtoa.o addrtot.o addrtypeof.o alg_info.o esp_info.o anyaddr.o \
 	iprange.o \
         keyblobtoid.o \
 	kernel_alg.o lex.o \
-	realtimetoa.o lswconf.o \
+	lswconf.o \
 	lswfips.o \
-	portof.o rangetosubnet.o sameaddr.o \
+	rangetosubnet.o sameaddr.o \
 	satot.o secrets.o subnetof.o subnettoa.o subnettot.o \
 	subnettypeof.o ttoaddr.o ttodata.o ttoprotoport.o \
 	ttorange.o ttosa.o ttosubnet.o ttoul.o ultot.o \
 	secitem_chunk.o \
 	base64_rsa_pubkey.o \
 	lswnss.o \
-	lsw_pexpect_log.o \
 	lsw_passert_fail.o \
 	libreswan_log.o \
 	libreswan_loglog.o \
 	alg_byname.o
 
+OBJS += ip_address.o
+
+OBJS += lmod.o
+OBJS += deltatime.o
+OBJS += realtime.o
+OBJS += monotime.o
+
 OBJS += debug_enum_names.o
+OBJS += libreswan_DBG_dump.o
+OBJS += libreswan_DBG_log.o
+
 OBJS += lswlog.o
 OBJS += lswlog_dbg.o
-OBJS += libreswan_DBG_dump.o
-OBJS += lswlog_pr_error.o
+OBJS += lswlog_nss_error.o
+OBJS += lswlog_nss_ckm.o
+OBJS += lswlog_nss_ckf.o
+OBJS += lswlog_nss_cka.o
 OBJS += lswlog_source_line.o
 OBJS += lswlog_sanitized.o
 OBJS += lswlog_errno.o
 OBJS += lswlog_bytes.o
+OBJS += lswlog_enum_lset_short.o
+OBJS += lswlog_realtime.o
+OBJS += lswlog_deltatime.o
+OBJS += lswlog_monotime.o
+OBJS += lswlog_ip.o
+OBJS += lswlog_sensitive_ip.o
+OBJS += lswlog_to_file_stream.o
+OBJS += lswlog_pexpect.o
+OBJS += lswlog_passert.o
 
 # Crypto code:
 #

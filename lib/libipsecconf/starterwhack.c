@@ -5,7 +5,7 @@
  * Copyright (C) 2004-2006 Michael Richardson <mcr@xelerance.com>
  * Copyright (C) 2010,2013 D. Hugh Redelmeier <hugh@mimosa.com>
  * Copyright (C) 2011 Mattias Walström <lazzer@vmlinux.org>
- * Copyright (C) 2012-2013 Paul Wouters <paul@libreswan.org>
+ * Copyright (C) 2012-2017 Paul Wouters <paul@libreswan.org>
  * Copyright (C) 2012 Philippe Vouters <Philippe.Vouters@laposte.net>
  * Copyright (C) 2013 Antony Antony <antony@phenome.org>
  * Copyright (C) 2013 Matt Rogers <mrogers@redhat.com>
@@ -50,7 +50,7 @@
 #include "lswlog.h"
 #include "whack.h"
 #include "id.h"
-
+#include "ip_address.h"
 
 static void update_ports(struct whack_message * m)
 {
@@ -371,10 +371,12 @@ static void set_whack_end(char *lr,
 		w->host_vtiip = l->vti_ip;
 
 	w->has_client = l->has_client;
-	if (l->has_client)
+	if (l->has_client) {
 		w->client = l->subnet;
-	else
+	} else {
+		/* ??? is this a crude way of seting client to anyaddr? */
 		w->client.addr.u.v4.sin_family = l->addr_family;
+	}
 	w->updown = l->strings[KSCF_UPDOWN];
 	w->host_port = IKE_UDP_PORT; /* XXX starter should support (nat)-ike-port */
 	w->has_client_wildcard = l->has_client_wildcard;
@@ -540,7 +542,7 @@ static int starter_whack_basic_add_conn(struct starter_config *cfg,
 	msg.sa_keying_tries = conn->options[KBF_KEYINGTRIES];
 	msg.sa_replay_window = conn->options[KBF_REPLAY_WINDOW];
 
-	msg.r_interval = conn->options[KBF_RETRANSMIT_INTERVAL];
+	msg.r_interval = deltatime_ms(conn->options[KBF_RETRANSMIT_INTERVAL_MS]);
 	msg.r_timeout = deltatime(conn->options[KBF_RETRANSMIT_TIMEOUT]);
 
 	msg.policy = conn->policy;
@@ -663,13 +665,19 @@ static int starter_whack_basic_add_conn(struct starter_config *cfg,
 
 #endif
 
-	msg.modecfg_domain = conn->modecfg_domain;
-	starter_log(LOG_LEVEL_DEBUG, "conn: \"%s\" modecfgdomain=%s",
-		conn->name, msg.modecfg_domain);
+	msg.modecfg_dns = conn->modecfg_dns;
+	starter_log(LOG_LEVEL_DEBUG, "conn: \"%s\" modecfgdns=%s",
+		conn->name, msg.modecfg_dns);
+	msg.modecfg_domains = conn->modecfg_domains;
+	starter_log(LOG_LEVEL_DEBUG, "conn: \"%s\" modecfgdomains=%s",
+		conn->name, msg.modecfg_domains);
 	msg.modecfg_banner = conn->modecfg_banner;
 	starter_log(LOG_LEVEL_DEBUG, "conn: \"%s\" modecfgbanner=%s",
 		conn->name, msg.modecfg_banner);
 
+	msg.conn_mark_both = conn->conn_mark_both;
+	starter_log(LOG_LEVEL_DEBUG, "conn: \"%s\" mark=%s",
+		conn->name, msg.conn_mark_both);
 	msg.conn_mark_in = conn->conn_mark_in;
 	starter_log(LOG_LEVEL_DEBUG, "conn: \"%s\" mark-in=%s",
 		conn->name, msg.conn_mark_in);
@@ -689,23 +697,6 @@ static int starter_whack_basic_add_conn(struct starter_config *cfg,
 		msg.xauthby = conn->options[KBF_XAUTHBY];
 	if (conn->options_set[KBF_XAUTHFAIL])
 		msg.xauthfail = conn->options[KBF_XAUTHFAIL];
-
-	if (conn->modecfg_dns1 != NULL) {
-		if (!tnatoaddr(conn->modecfg_dns1, 0, AF_INET,
-				&(msg.modecfg_dns1)) &&
-			!tnatoaddr(conn->modecfg_dns1, 0, AF_INET6,
-				&(msg.modecfg_dns1)))
-			starter_log(LOG_LEVEL_ERR,
-				"Ignoring modecfgdns1= entry, it is not a valid IPv4 or IPv6 address");
-	}
-	if (conn->modecfg_dns2 != NULL) {
-		if (!tnatoaddr(conn->modecfg_dns2, 0, AF_INET,
-				&(msg.modecfg_dns2)) &&
-			!tnatoaddr(conn->modecfg_dns2, 0, AF_INET6,
-				&(msg.modecfg_dns2)))
-			starter_log(LOG_LEVEL_ERR,
-				"Ignoring modecfgdns2= entry, it is not a valid IPv4 or IPv6 address");
-	}
 
 	set_whack_end("left",  &msg.left, &conn->left);
 	set_whack_end("right", &msg.right, &conn->right);

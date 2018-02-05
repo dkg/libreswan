@@ -43,6 +43,7 @@
 #include "ikev2_ipseckey.h"
 #include "keys.h"
 #include "secrets.h"
+#include "ip_address.h"
 
 struct p_dns_req;
 
@@ -260,7 +261,7 @@ static void validate_address(struct p_dns_req *dnsr, unsigned char *addr)
 	ip_address ipaddr;
 	ipstr_buf ra;
 	ipstr_buf rb;
-	unsigned short af = st->st_remoteaddr.u.v4.sin_family;
+	unsigned short af = addrtypeof(&st->st_remoteaddr);
 	size_t addr_len = af == AF_INET ? 4 : 16;
 
 	if (dnsr->qtype != LDNS_RR_TYPE_A) {
@@ -495,7 +496,7 @@ static void ipseckey_dbg_dns_resp(struct p_dns_req *dnsr)
 		DBG_log("%s returned %s cache=%s elapsedtime %lu.%06lu",
 			dnsr->log_buf,
 			dnsr->rcode_name,
-			dnsr->cache_hit ? "yes" : "no",
+			bool_str(dnsr->cache_hit),
 			(unsigned long)served_delta.tv_sec,
 			(unsigned long)(served_delta.tv_usec * 1000000)));
 
@@ -549,12 +550,10 @@ static void idr_ipseckey_fetch_continue(struct p_dns_req *dnsr)
 
 static void idi_ipseckey_fetch_tail(struct state *st, bool err)
 {
-	struct msg_digest *md = st->st_suspended_md;
+	struct msg_digest *md = unsuspend_md(st);
 	stf_status stf;
 
 	passert(md !=  NULL && (st == md->st));
-
-	unset_suspended(md->st);
 
 	if (err) {
 		stf = STF_FAIL + v2N_AUTHENTICATION_FAILED;
@@ -719,7 +718,6 @@ static err_t build_dns_name(char *name_buf, /* len SWAN_MAX_DOMAIN_LEN */
 		const struct id *id)
 {
 	/* note: all end in "." to suppress relative searches */
-	id = resolve_myid(id);
 
 	if (id->name.len >= SWAN_MAX_DOMAIN_LEN)
 		return "ID is too long >= SWAN_MAX_DOMAIN_LEN";

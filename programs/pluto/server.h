@@ -79,21 +79,27 @@ extern struct iface_port  *interfaces;   /* public interfaces */
 extern enum pluto_ddos_mode ddos_mode;
 extern bool pluto_drop_oppo_null;
 
+extern struct iface_port *lookup_iface_ip(ip_address *ip, u_int16_t port);
 extern bool use_interface(const char *rifn);
-extern void find_ifaces(void);
+extern void find_ifaces(bool rm_dead);
 extern void show_ifaces_status(void);
 extern void free_ifaces(void);
 extern void show_debug_status(void);
 extern void show_fips_status(void);
 extern void call_server(void);
 extern void init_event_base(void);
+extern void pluto_event_now(const char *name, void (*cb)(void*), void *arg);
 typedef void event_callback_routine(evutil_socket_t, const short, void *);
-extern struct event *timer_private_pluto_event_new(evutil_socket_t ft,
-	short events, event_callback_fn cb, void *arg,
-	const struct timeval *t);
+extern void timer_private_pluto_event_new(struct event **evp,
+					  evutil_socket_t ft,
+					  short events,
+					  event_callback_fn cb,
+					  void *arg,
+					  deltatime_t delay);
 extern struct pluto_event *pluto_event_add(evutil_socket_t fd, short events,
-		                event_callback_fn cb, void *arg,
-				const struct timeval *delay, char *name);
+					   event_callback_fn cb, void *arg,
+					   const deltatime_t *delay,
+					   const char *name);
 extern void delete_pluto_event(struct pluto_event **evp);
 extern void link_pluto_event_list(struct pluto_event *e);
 extern void free_pluto_event_list(void);
@@ -111,5 +117,9 @@ extern bool send_ike_msg_without_recording(struct state *st, struct packet_byte_
 extern bool resend_ike_v1_msg(struct state *st, const char *where);
 extern bool send_keepalive(struct state *st, const char *where);
 extern struct event_base *get_pluto_event_base(void);
+
+extern int pluto_fork(int op(void *context),
+		      void (*callback)(int status, void *context),
+		      void *context);
 
 #endif /* _SERVER_H */

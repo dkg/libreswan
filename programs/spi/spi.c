@@ -43,9 +43,6 @@
 #include <stdlib.h>
 #include <limits.h>
 #include <libreswan.h>
-#if 0
-#include <linux/autoconf.h>    /* CONFIG_IPSEC_PFKEYv2 */
-#endif
 #include <signal.h>
 #include <sys/socket.h>
 #include <libreswan/pfkeyv2.h>
@@ -66,12 +63,12 @@
 #include "alg_info.h"
 #include "kernel_alg.h"
 #include "pfkey_help.h"
-
+#include "ip_address.h"
 #include "lsw_select.h"
 
 struct encap_msghdr *em;
 
-char *progname;
+const char *progname;
 bool debug = FALSE;
 bool get = FALSE;
 int dumpsaref = 0;
@@ -142,7 +139,7 @@ static const char *usage_string =
 	"[ --listenreply ]   is optional, and causes the command to stick\n"
 	"                    around and listen to what the PF_KEY socket says.\n";
 
-static void usage(char *s, FILE *f)
+static void usage(const char *s, FILE *f)
 {
 	/* s argument is actually ignored, at present */
 	fprintf(f, "%s:%s", s, usage_string);
@@ -1581,22 +1578,6 @@ int main(int argc, char *argv[])
 				return FALSE;
 		}
 
-#if 0
-		/* not yet implemented */
-		if (natt != 0 && !isanyaddr(&natt_oa)) {
-			ip_str_buf b;
-
-			success = pfkeyext_address(SADB_X_EXT_NAT_T_OA,
-						   &natt_oa,
-						   "pfkey_nat_t_oa Add ESP SA",
-						   ipsaid_txt, extensions);
-			if (debug)
-				fprintf(stderr, "setting nat_oa to %s\n",
-					ipstr(&natt_oa, &b));
-			if (!success)
-				return FALSE;
-		}
-#endif
 	}
 
 	if (debug) {

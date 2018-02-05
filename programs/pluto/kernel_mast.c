@@ -405,11 +405,11 @@ static bool mast_do_command(const struct connection *c, const struct spd_route *
 			   refhim,
 			   (c->policy & POLICY_SAREF_TRACK_CONNTRACK) ?
 			     "conntrack" :
-			   (c->policy & POLICY_SAREF_TRACK) ?
-			     "yes" : "no",
+			   bool_str((c->policy & POLICY_SAREF_TRACK) != LEMPTY),
 			   verb, verb_suffix,
 			   common_shell_out_str,
-			   sr->this.updown)) {
+			   sr->this.updown))
+	{
 		loglog(RC_LOG_SERIOUS, "%s%s command too long!", verb,
 		       verb_suffix);
 		return FALSE;
@@ -600,6 +600,7 @@ static bool mast_sag_eroute(const struct state *st, const struct spd_route *sr,
 const struct kernel_ops mast_kernel_ops = {
 	.type = USE_MASTKLIPS,
 	.async_fdp = &pfkeyfd,
+	.route_fdp = NULL,
 	.replay_window = 64,
 
 	.pfkey_register = klips_pfkey_register,

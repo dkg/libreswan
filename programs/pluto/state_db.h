@@ -16,7 +16,10 @@
 #ifndef _state_db_h_
 #define _state_db_h_
 
-#include "state_entry.h"
+struct state;
+struct list_entry;
+
+void init_state_db(void);
 
 void add_state_to_db(struct state *st);
 void rehash_state_cookies_in_db(struct state *st);
@@ -25,18 +28,27 @@ void del_state_from_db(struct state *st);
 struct state *state_by_serialno(so_serial_t serialno);
 
 /*
- * Return the hash chain for the given value.  It will contain may
+ * List of all valid states; can be iterated in old-to-new and
+ * new-to-old order.
+ */
+
+extern struct list_head serialno_list_head;
+
+#define FOR_EACH_STATE_NEW2OLD(ST)				\
+	FOR_EACH_LIST_ENTRY_NEW2OLD(&serialno_list_head, ST)
+
+#define FOR_EACH_STATE_OLD2NEW(ST)				\
+	FOR_EACH_LIST_ENTRY_OLD2NEW(&serialno_list_head, ST)
+
+
+/*
+ * Return the slot for the given hash value.  It will contain may
  * entries, not just the specified value.  Extra filtering is
  * required!
  */
 
-/* ICOOKIE chain */
-extern struct state_entry *icookie_chain(const uint8_t *icookie);
-/* ICOOKIE:RCOOKIE chain */
-struct state_entry *cookies_chain(const uint8_t *icookie,
-				  const uint8_t *rcookie);
-
-/* XXX: should not be public */
-extern struct state_hash_table cookies_hash_table;
+extern struct list_head *icookie_slot(const uint8_t *icookie);
+struct list_head *cookies_slot(const uint8_t *icookie,
+			       const uint8_t *rcookie);
 
 #endif

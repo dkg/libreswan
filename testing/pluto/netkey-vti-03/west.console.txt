@@ -116,6 +116,12 @@ ipsec0: flags=193<UP,RUNNING,NOARP>  mtu 1332
         TX packets 8  bytes 1328 (1.2 KiB)
         TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
 west #
+ # show how our tunnel interface looks
+west #
+ ip tun
+ip_vti0: ip/ip  remote any  local any  ttl inherit  nopmtudisc key 0
+ipsec0: ip/ip  remote any  local 192.1.2.45  ttl inherit  key 2
+west #
  echo done
 done
 west #
@@ -175,18 +181,6 @@ src 192.0.2.0/24 dst 192.0.1.0/24
 src 192.0.2.0/24 dst 192.0.1.0/24 
 	dir in priority 2344 ptype main 
 	mark 2/0xffffffff
-src ::/0 dst ::/0 proto ipv6-icmp type 135 
-	dir fwd priority 1 ptype main 
-src ::/0 dst ::/0 proto ipv6-icmp type 135 
-	dir in priority 1 ptype main 
-src ::/0 dst ::/0 proto ipv6-icmp type 135 
-	dir out priority 1 ptype main 
-src ::/0 dst ::/0 proto ipv6-icmp type 136 
-	dir fwd priority 1 ptype main 
-src ::/0 dst ::/0 proto ipv6-icmp type 136 
-	dir in priority 1 ptype main 
-src ::/0 dst ::/0 proto ipv6-icmp type 136 
-	dir out priority 1 ptype main 
 XFRM done
 IPSEC mangle TABLES
 NEW_IPSEC_CONN mangle TABLES

@@ -48,6 +48,8 @@ include $(top_srcdir)/mk/config.mk
 OBJS =
 
 OBJS += state_db.o
+OBJS += show.o
+OBJS += retransmit.o
 
 # local (possibly more up to date) copy of <linux/xfrm.h>
 ifeq ($(USE_XFRM_HEADER_COPY),true)
@@ -204,7 +206,7 @@ OBJS += test_buffer.o
 OBJS += pending.o cookie.o crypto.o defs.o
 OBJS += foodgroups.o log.o state.o plutomain.o plutoalg.o server.o
 OBJS += peerlog.o
-OBJS += state_entry.o
+OBJS += hash_table.o list_entry.o
 OBJS += timer.o hmac.o hostpair.o
 OBJS += myid.o ipsec_doi.o
 ifeq ($(USE_DNSSEC),true)
@@ -212,13 +214,15 @@ OBJS += ikev2_ipseckey.o
 endif
 OBJS += ikev1.o ikev1_main.o ikev1_quick.o ikev1_dpd.o ikev1_spdb_struct.o ikev1_msgid.o
 OBJS += ikev2.o ikev2_parent.o ikev2_child.o ikev2_spdb_struct.o
-OBJS += ikev2_rsa.o ikev2_psk.o ikev2_crypto.o
+OBJS += ikev2_rsa.o ikev2_psk.o ikev2_ppk.o ikev2_crypto.o
 OBJS += crypt_symkey.o crypt_prf.o ikev1_prf.o ikev2_prf.o
 OBJS += crypt_hash.o
 OBJS += kernel.o
 OBJS += kernel_nokernel.o rcv_whack.o pluto_stats.o
 OBJS += demux.o msgdigest.o keys.o
-OBJS += pluto_crypt.o crypt_utils.o crypt_ke.o crypt_dh.o crypt_start_dh.o
+OBJS += pluto_crypt.o crypt_utils.o crypt_ke.o crypt_dh.o
+OBJS += crypt_dh_v1.o
+OBJS += crypt_dh_v2.o
 OBJS += rnd.o spdb.o spdb_struct.o
 OBJS += vendor.o nat_traversal.o virtual.o
 OBJS += packet.o pluto_constants.o readwhackmsg.o

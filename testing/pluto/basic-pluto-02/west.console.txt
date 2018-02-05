@@ -123,7 +123,7 @@ west #
  ipsec auto --replace westnet-all
 002 "westnet-all": deleting non-instance connection
 002 "westnet-all" #2: deleting state (STATE_QUICK_I2) and sending notification
-005 "westnet-all" #2: ESP traffic information: in=0B out=0B
+005 "westnet-all" #2: ESP traffic information: in=336B out=336B
 002 "westnet-all" #1: deleting state (STATE_MAIN_I4) and sending notification
 002 added connection description "westnet-all"
 west #
@@ -132,7 +132,7 @@ west #
 000 "westnet-all":     oriented; my_ip=unset; their_ip=unset; my_updown=ipsec _updown;
 000 "westnet-all":   xauth us:none, xauth them:none,  my_username=[any]; their_username=[any]
 000 "westnet-all":   our auth:rsasig, their auth:rsasig
-000 "westnet-all":   modecfg info: us:none, them:none, modecfg policy:push, dns1:unset, dns2:unset, domain:unset, banner:unset, cat:unset;
+000 "westnet-all":   modecfg info: us:none, them:none, modecfg policy:push, dns:unset, domains:unset, banner:unset, cat:unset;
 000 "westnet-all":   labeled_ipsec:no;
 000 "westnet-all":   policy_label:unset;
 000 "westnet-all":   ike_life: 3600s; ipsec_life: 28800s; replay_window: 32; rekey_margin: 540s; rekey_fuzz: 100%; keyingtries: 0;
@@ -152,18 +152,6 @@ west #
 west NOW
 XFRM state:
 XFRM policy:
-src ::/0 dst ::/0 proto ipv6-icmp type 135 
-	dir fwd priority 1 ptype main 
-src ::/0 dst ::/0 proto ipv6-icmp type 135 
-	dir in priority 1 ptype main 
-src ::/0 dst ::/0 proto ipv6-icmp type 135 
-	dir out priority 1 ptype main 
-src ::/0 dst ::/0 proto ipv6-icmp type 136 
-	dir fwd priority 1 ptype main 
-src ::/0 dst ::/0 proto ipv6-icmp type 136 
-	dir in priority 1 ptype main 
-src ::/0 dst ::/0 proto ipv6-icmp type 136 
-	dir out priority 1 ptype main 
 XFRM done
 IPSEC mangle TABLES
 NEW_IPSEC_CONN mangle TABLES

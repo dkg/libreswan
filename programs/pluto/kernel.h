@@ -22,6 +22,8 @@
 
 #include <net/if.h>
 
+#include "monotime.h"
+
 extern bool can_do_IPcomp;  /* can system actually perform IPCOMP? */
 extern reqid_t global_reqids;
 
@@ -83,12 +85,18 @@ struct kernel_sa {
 	const ip_address *src;
 	const ip_address *dst;
 
+	const ip_address *ndst;		/* netlink migration new destination */
+	const ip_address *nsrc;		/* netlink migration new source */
+
 	const ip_subnet *src_client;
 	const ip_subnet *dst_client;
 
 	bool inbound;
+	int  nk_dir;			/* netky has 3, in,out & fwd */
 	bool add_selector;
 	bool esn;
+	bool decap_dscp;
+	bool nopmtudisc;
 	u_int32_t tfcpad;
 	ipsec_spi_t spi;
 	unsigned proto;
@@ -145,6 +153,9 @@ struct raw_iface {
 	struct raw_iface *next;
 };
 
+/* which kernel interface to use */
+extern enum kernel_interface kern_interface;
+
 LIST_HEAD(iface_list, iface_dev);
 extern struct iface_list interface_dev;
 
@@ -165,12 +176,13 @@ struct kernel_ops {
 	bool sha2_truncbug_support;
 	int replay_window;
 	int *async_fdp;
+	int *route_fdp;
 
 	void (*init)(void);
 	void (*pfkey_register)(void);
 	void (*pfkey_register_response)(const struct sadb_msg *msg);
 	void (*process_queue)(void);
-	void (*process_msg)(void);
+	void (*process_msg)(int);
 	void (*set_debug)(int,
 			  libreswan_keying_debug_func_t debug_func,
 			  libreswan_keying_debug_func_t error_func);
@@ -225,6 +237,7 @@ struct kernel_ops {
 			  struct state *st);
 	void (*process_ifaces)(struct raw_iface *rifaces);
 	bool (*exceptsocket)(int socketfd, int family);
+	bool (*migrate_sa)(struct state *st);
 	bool (*v6holes)();
 };
 
@@ -312,7 +325,7 @@ struct bare_shunt {
 };
 
 extern void show_shunt_status(void);
-extern int show_shunt_count(void);
+extern unsigned show_shunt_count(void);
 
 struct bare_shunt **bare_shunt_ptr(const ip_subnet *ours,
 				   const ip_subnet *his,
@@ -387,6 +400,8 @@ extern bool route_and_eroute(struct connection *c,
 
 extern bool was_eroute_idle(struct state *st, deltatime_t idle_max);
 extern bool get_sa_info(struct state *st, bool inbound, deltatime_t *ago /* OUTPUT */);
+extern bool migrate_ipsec_sa(struct state *st);
+
 
 extern bool eroute_connection(const struct spd_route *sr,
 			      ipsec_spi_t cur_spi,
@@ -462,5 +477,8 @@ extern bool raw_eroute(const ip_address *this_host,
 #endif
 		       );
 
+extern deltatime_t bare_shunt_interval;
+extern void set_text_said(char *text_said, const ip_address *dst,
+			  ipsec_spi_t spi, int sa_proto);
 #define _KERNEL_H_
 #endif /* _KERNEL_H_ */

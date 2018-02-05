@@ -34,6 +34,8 @@
 #include "defs.h"
 #include "constants.h"
 #include "addresspool.h"
+#include "monotime.h"
+#include "ip_address.h"
 
 
 /*

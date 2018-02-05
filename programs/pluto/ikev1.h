@@ -8,7 +8,10 @@
 
 extern void init_ikev1(void);
 
-extern void ikev1_echo_hdr(struct msg_digest *md, bool enc, u_int8_t np);
+void ikev1_init_out_pbs_echo_hdr(struct msg_digest *md, bool enc, u_int8_t np,
+				 pb_stream *output_stream, uint8_t *output_buffer,
+				 size_t sizeof_output_buffer,
+				 pb_stream *rbody);
 
 extern void complete_v1_state_transition(struct msg_digest **mdp,
 					 stf_status result);
@@ -45,27 +48,27 @@ extern bool ikev1_ship_KE(struct state *st,
 		    pb_stream *outs, u_int8_t np);
 
 /* **MAIN MODE FUNCTIONS** in ikev1_main.c */
-extern stf_status main_outI1(int whack_sock,
-			     struct connection *c,
-			     struct state *predecessor,
-			     lset_t policy,
-			     unsigned long try,
-			     enum crypto_importance importance
+extern void main_outI1(int whack_sock,
+		       struct connection *c,
+		       struct state *predecessor,
+		       lset_t policy,
+		       unsigned long try,
+		       enum crypto_importance importance
 #ifdef HAVE_LABELED_IPSEC
-			     , struct xfrm_user_sec_ctx_ike *uctx
+		       , struct xfrm_user_sec_ctx_ike *uctx
 #endif
-			     );
+		       );
 
-extern stf_status aggr_outI1(int whack_sock,
-			     struct connection *c,
-			     struct state *predecessor,
-			     lset_t policy,
-			     unsigned long try,
-			     enum crypto_importance importance
+extern void aggr_outI1(int whack_sock,
+		       struct connection *c,
+		       struct state *predecessor,
+		       lset_t policy,
+		       unsigned long try,
+		       enum crypto_importance importance
 #ifdef HAVE_LABELED_IPSEC
-			     , struct xfrm_user_sec_ctx_ike *uctx
+		       , struct xfrm_user_sec_ctx_ike *uctx
 #endif
-			     );
+		       );
 
 extern bool ikev1_delete_out(struct state *st);
 

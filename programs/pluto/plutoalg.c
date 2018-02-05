@@ -27,9 +27,9 @@
 
 #include "sysdep.h"
 #include "constants.h"
+#include "defs.h"
 #include "log.h"
 #include "lswalloc.h"
-#include "defs.h"
 #include "id.h"
 #include "connections.h"
 #include "state.h"
@@ -94,6 +94,9 @@ static bool kernel_alg_db_add(struct db_context *db_ctx,
 		} else {
 			/* no key length - if required add default here and add another max entry */
 			int def_ks = crypto_req_keysize(CRK_ESPorAH, ealg_i);
+			int new_keysize = (esp_info->encrypt->keylen_omitted ? 0
+					   : esp_info->encrypt->keydeflen);
+			pexpect(def_ks == new_keysize);
 
 			if (def_ks != 0) {
 				int max_ks = BITS_PER_BYTE *
@@ -331,11 +334,6 @@ struct db_sa *kernel_alg_makedb(lset_t policy, struct alg_info_esp *ei,
 	if (ei == NULL) {
 		struct db_sa *sadb;
 		lset_t pm = POLICY_ENCRYPT | POLICY_AUTHENTICATE;
-
-#if 0
-		if (can_do_IPcomp)
-			pm |= POLICY_COMPRESS;
-#endif
 
 		sadb = &ipsec_sadb[(policy & pm) >> POLICY_IPSEC_SHIFT];
 

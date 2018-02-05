@@ -125,7 +125,7 @@ west #
 000 "TUNNEL-A":     oriented; my_ip=unset; their_ip=unset; mycert=west; hiscert=east; my_updown=ipsec _updown;
 000 "TUNNEL-A":   xauth us:none, xauth them:none,  my_username=[any]; their_username=[any]
 000 "TUNNEL-A":   our auth:rsasig, their auth:rsasig
-000 "TUNNEL-A":   modecfg info: us:none, them:none, modecfg policy:push, dns1:unset, dns2:unset, domain:unset, banner:unset, cat:unset;
+000 "TUNNEL-A":   modecfg info: us:none, them:none, modecfg policy:push, dns:unset, domains:unset, banner:unset, cat:unset;
 000 "TUNNEL-A":   labeled_ipsec:no;
 000 "TUNNEL-A":   policy_label:unset;
 000 "TUNNEL-A":   CAs: 'C=CA, ST=Ontario, L=Toronto, O=Libreswan, OU=Test Department, CN=Libreswan test CA for mainca, E=testing@libreswan.org'...'%any'
@@ -143,7 +143,7 @@ west #
 000 "TUNNEL-B":     oriented; my_ip=unset; their_ip=unset; mycert=west; hiscert=east; my_updown=ipsec _updown;
 000 "TUNNEL-B":   xauth us:none, xauth them:none,  my_username=[any]; their_username=[any]
 000 "TUNNEL-B":   our auth:rsasig, their auth:rsasig
-000 "TUNNEL-B":   modecfg info: us:none, them:none, modecfg policy:push, dns1:unset, dns2:unset, domain:unset, banner:unset, cat:unset;
+000 "TUNNEL-B":   modecfg info: us:none, them:none, modecfg policy:push, dns:unset, domains:unset, banner:unset, cat:unset;
 000 "TUNNEL-B":   labeled_ipsec:no;
 000 "TUNNEL-B":   policy_label:unset;
 000 "TUNNEL-B":   CAs: 'C=CA, ST=Ontario, L=Toronto, O=Libreswan, OU=Test Department, CN=Libreswan test CA for mainca, E=testing@libreswan.org'...'%any'
@@ -160,7 +160,7 @@ west #
 000 "TUNNEL-C":     oriented; my_ip=unset; their_ip=unset; mycert=west; my_updown=ipsec _updown;
 000 "TUNNEL-C":   xauth us:none, xauth them:none,  my_username=[any]; their_username=[any]
 000 "TUNNEL-C":   our auth:rsasig, their auth:rsasig
-000 "TUNNEL-C":   modecfg info: us:none, them:none, modecfg policy:push, dns1:unset, dns2:unset, domain:unset, banner:unset, cat:unset;
+000 "TUNNEL-C":   modecfg info: us:none, them:none, modecfg policy:push, dns:unset, domains:unset, banner:unset, cat:unset;
 000 "TUNNEL-C":   labeled_ipsec:no;
 000 "TUNNEL-C":   policy_label:unset;
 000 "TUNNEL-C":   CAs: 'C=CA, ST=Ontario, L=Toronto, O=Libreswan, OU=Test Department, CN=Libreswan test CA for mainca, E=testing@libreswan.org'...'%any'
@@ -189,7 +189,7 @@ west #
 000 "TUNNEL-A":     oriented; my_ip=unset; their_ip=unset; mycert=west; hiscert=east; my_updown=ipsec _updown;
 000 "TUNNEL-A":   xauth us:none, xauth them:none,  my_username=[any]; their_username=[any]
 000 "TUNNEL-A":   our auth:rsasig, their auth:rsasig
-000 "TUNNEL-A":   modecfg info: us:none, them:none, modecfg policy:push, dns1:unset, dns2:unset, domain:unset, banner:unset, cat:unset;
+000 "TUNNEL-A":   modecfg info: us:none, them:none, modecfg policy:push, dns:unset, domains:unset, banner:unset, cat:unset;
 000 "TUNNEL-A":   labeled_ipsec:no;
 000 "TUNNEL-A":   policy_label:unset;
 000 "TUNNEL-A":   CAs: 'C=CA, ST=Ontario, L=Toronto, O=Libreswan, OU=Test Department, CN=Libreswan test CA for mainca, E=testing@libreswan.org'...'%any'
@@ -207,7 +207,7 @@ west #
 000 "TUNNEL-C":     oriented; my_ip=unset; their_ip=unset; mycert=west; my_updown=ipsec _updown;
 000 "TUNNEL-C":   xauth us:none, xauth them:none,  my_username=[any]; their_username=[any]
 000 "TUNNEL-C":   our auth:rsasig, their auth:rsasig
-000 "TUNNEL-C":   modecfg info: us:none, them:none, modecfg policy:push, dns1:unset, dns2:unset, domain:unset, banner:unset, cat:unset;
+000 "TUNNEL-C":   modecfg info: us:none, them:none, modecfg policy:push, dns:unset, domains:unset, banner:unset, cat:unset;
 000 "TUNNEL-C":   labeled_ipsec:no;
 000 "TUNNEL-C":   policy_label:unset;
 000 "TUNNEL-C":   CAs: 'C=CA, ST=Ontario, L=Toronto, O=Libreswan, OU=Test Department, CN=Libreswan test CA for mainca, E=testing@libreswan.org'...'%any'
@@ -277,18 +277,6 @@ src 192.0.2.254/32 dst 192.0.1.254/32
 	dir in priority 2080 ptype main 
 	tmpl src 192.1.2.23 dst 192.1.2.45
 		proto esp reqid REQID mode tunnel
-src ::/0 dst ::/0 proto ipv6-icmp type 135 
-	dir fwd priority 1 ptype main 
-src ::/0 dst ::/0 proto ipv6-icmp type 135 
-	dir in priority 1 ptype main 
-src ::/0 dst ::/0 proto ipv6-icmp type 135 
-	dir out priority 1 ptype main 
-src ::/0 dst ::/0 proto ipv6-icmp type 136 
-	dir fwd priority 1 ptype main 
-src ::/0 dst ::/0 proto ipv6-icmp type 136 
-	dir in priority 1 ptype main 
-src ::/0 dst ::/0 proto ipv6-icmp type 136 
-	dir out priority 1 ptype main 
 XFRM done
 IPSEC mangle TABLES
 NEW_IPSEC_CONN mangle TABLES

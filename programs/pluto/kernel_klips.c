@@ -50,6 +50,7 @@
 
 #include "alg_info.h"
 #include "kernel_alg.h"
+#include "ip_address.h"
 
 static void klips_process_raw_ifaces(struct raw_iface *rifaces)
 {
@@ -321,6 +322,7 @@ static bool klips_do_command(const struct connection *c, const struct spd_route 
 const struct kernel_ops klips_kernel_ops = {
 	.type = USE_KLIPS,
 	.async_fdp = &pfkeyfd,
+	.route_fdp = NULL,
 	.replay_window = 64,
 
 	.pfkey_register = klips_pfkey_register,

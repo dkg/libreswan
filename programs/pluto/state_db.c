@@ -16,92 +16,206 @@
 #include "defs.h"
 
 #include "state_db.h"
-#include "state_entry.h"
 #include "state.h"
 #include "lswlog.h"
 #include "cookie.h"
+#include "hash_table.h"
+
+#define STATE_TABLE_SIZE 499
+
+static size_t log_state(struct lswlog *buf, void *data)
+{
+	if (data == NULL) {
+		return lswlogf(buf, "state #0");
+	} else {
+		struct state *st = (struct state*) data;
+		return lswlogf(buf, "state #%lu", st->st_serialno);
+	}
+}
+
+/*
+ * A table ordered by serialno.
+ */
+
+struct list_info serialno_list_info = {
+	.debug = DBG_CONTROLMORE,
+	.name = "serialno list",
+	.log = log_state,
+};
+
+struct list_head serialno_list_head;
 
 /*
  * A table hashed by serialno.
  */
 
-static struct state_hash_table serialno_hash_table = {
-	.name = "serialno table",
+static size_t serialno_hash(void *data)
+{
+	struct state *st = data;
+	return st->st_serialno;
+}
+
+static struct list_head serialno_hash_slots[STATE_TABLE_SIZE];
+static struct hash_table serialno_hash_table = {
+	.info = {
+		.debug = DBG_CONTROLMORE,
+		.name = "serialno table",
+		.log = log_state,
+	},
+	.hash = serialno_hash,
+	.nr_slots = STATE_TABLE_SIZE,
+	.slots = serialno_hash_slots,
 };
 
-static struct state_entry *serialno_chain(so_serial_t serialno)
+static struct list_head *serialno_chain(so_serial_t serialno)
 {
-
-	struct state_entry *head = state_entries_by_hash(&serialno_hash_table,
+	struct list_head *head = hash_table_slot_by_hash(&serialno_hash_table,
 							 serialno);
 	DBG(DBG_RAW | DBG_CONTROL,
 	    DBG_log("%s: hash serialno #%lu to head %p",
-		    serialno_hash_table.name,
+		    serialno_hash_table.info.name,
 		    serialno, head));
 	return head;
 }
 
 struct state *state_by_serialno(so_serial_t serialno)
 {
+	/*
+	 * Note that since SOS_NOBODY is never hashed, a lookup of
+	 * SOS_NOBODY always returns NULL.
+	 */
 	struct state *st;
-	FOR_EACH_STATE_ENTRY(st, serialno_chain(serialno), {
-			if (st->st_serialno == serialno) {
-				return st;
-			}
-		});
+	FOR_EACH_LIST_ENTRY_NEW2OLD(serialno_chain(serialno), st) {
+		if (st->st_serialno == serialno) {
+			return st;
+		}
+	}
 	return NULL;
-}
-
-/*
- * A table hashed by icookie+rcookie.
- */
-
-static struct state_entry *hash_by_state_cookies(struct state_hash_table *table,
-						 const uint8_t *icookie,
-						 const uint8_t *rcookie)
-{
-	/* XXX the following hash is pretty pathetic */
-	unsigned i = 0;
-	unsigned j;
-	for (j = 0; j < COOKIE_SIZE; j++)
-		i = i * 407 + icookie[j] + rcookie[j];
-	struct state_entry *head = state_entries_by_hash(table, i);
-	LSWDBGP(DBG_RAW | DBG_CONTROL, buf) {
-		lswlogf(buf, "%s: hash", table->name);
-		lswlogs(buf, " icookie ");
-		lswlog_bytes(buf, icookie, COOKIE_SIZE);
-		lswlogs(buf, " rcookie ");
-		lswlog_bytes(buf, rcookie, COOKIE_SIZE);
-		lswlogf(buf, " to %u head %p", i, head);
-	};
-	return head;
 }
 
 /*
  * Hash table indexed by just the ICOOKIE.
  */
 
-static struct state_hash_table icookie_hash_table = {
-	.name = "icookie table",
+static size_t icookie_hasher(const uint8_t *icookie)
+{
+	/*
+	 * 251 is a prime close to 256 (so like <<8).
+	 *
+	 * There's no real rationale for doing this.
+	 */
+	size_t hash = 0;
+	for (unsigned j = 0; j < COOKIE_SIZE; j++) {
+		hash = hash * 251 + icookie[j];
+	}
+	return hash;
+}
+
+static size_t icookie_hash(void *data)
+{
+	struct state *st = (struct state*) data;
+	return icookie_hasher(st->st_icookie);
+}
+
+static size_t icookie_log(struct lswlog *buf, void *data)
+{
+	struct state *st = (struct state *) data;
+	size_t size = 0;
+	size += log_state(buf, st);
+	size += lswlogs(buf, ": ");
+	size += lswlog_bytes(buf, st->st_icookie, COOKIE_SIZE);
+	return size;
+}
+
+static struct list_head icookie_hash_slots[STATE_TABLE_SIZE];
+static struct hash_table icookie_hash_table = {
+	.info = {
+		.name = "icookie table",
+		.log = icookie_log,
+	},
+	.hash = icookie_hash,
+	.nr_slots = STATE_TABLE_SIZE,
+	.slots = icookie_hash_slots,
 };
 
-struct state_entry *icookie_chain(const u_char *icookie)
+struct list_head *icookie_slot(const u_char *icookie)
 {
-	return hash_by_state_cookies(&icookie_hash_table, icookie, zero_cookie);
+	size_t hash = icookie_hasher(icookie);
+	struct list_head *slot = hash_table_slot_by_hash(&icookie_hash_table, hash);
+	LSWDBGP(DBG_RAW | DBG_CONTROL, buf) {
+		lswlogf(buf, "%s: hash icookie ", icookie_hash_table.info.name);
+		lswlog_bytes(buf, icookie, COOKIE_SIZE);
+		lswlogf(buf, " to %zu slot %p", hash, slot);
+	};
+	return slot;
 }
 
 /*
  * Hash table indexed by both ICOOKIE and RCOOKIE.
  */
 
-struct state_hash_table cookies_hash_table = {
-	.name = "cookies table",
+/*
+ * A table hashed by icookie+rcookie.
+ */
+
+static size_t cookies_hasher(const uint8_t *icookie,
+			     const uint8_t *rcookie)
+{
+	/*
+	 * 251 is a prime close to 256 aka <<8.  65521 is a prime
+	 * close to 65536 aka <<16.
+	 *
+	 * There's no real rationale for doing this.
+	 */
+	size_t hash = 0;
+	for (unsigned j = 0; j < COOKIE_SIZE; j++) {
+		hash = hash * 65521 + icookie[j] * 251 + rcookie[j];
+	}
+	return hash;
+}
+
+static size_t cookies_hash(void *data)
+{
+	struct state *st = (struct state *)data;
+	return cookies_hasher(st->st_icookie, st->st_rcookie);
+}
+
+static size_t cookies_log(struct lswlog *buf, void *data)
+{
+	struct state *st = (struct state *) data;
+	size_t size = 0;
+	size += log_state(buf, st);
+	size += lswlogs(buf, ": ");
+	size += lswlog_bytes(buf, st->st_icookie, COOKIE_SIZE);
+	size += lswlogs(buf, "  ");
+	size += lswlog_bytes(buf, st->st_rcookie, COOKIE_SIZE);
+	return size;
+}
+
+static struct list_head cookies_hash_slots[STATE_TABLE_SIZE];
+static struct hash_table cookies_hash_table = {
+	.info = {
+		.name = "cookies table",
+		.log = cookies_log,
+	},
+	.hash = cookies_hash,
+	.nr_slots = STATE_TABLE_SIZE,
+	.slots = cookies_hash_slots,
 };
 
-struct state_entry *cookies_chain(const u_char *icookie,
-				  const u_char *rcookie)
+struct list_head *cookies_slot(const u_char *icookie,
+			       const u_char *rcookie)
 {
-	return hash_by_state_cookies(&cookies_hash_table, icookie, rcookie);
+	size_t hash = cookies_hasher(icookie, rcookie);
+	struct list_head *slot = hash_table_slot_by_hash(&cookies_hash_table, hash);
+	LSWDBGP(DBG_RAW | DBG_CONTROL, buf) {
+		lswlogf(buf, "%s: hash icookie ", cookies_hash_table.info.name);
+		lswlog_bytes(buf, icookie, COOKIE_SIZE);
+		lswlogs(buf, " rcookie ");
+		lswlog_bytes(buf, rcookie, COOKIE_SIZE);
+		lswlogf(buf, " to %zu slot %p", hash, slot);
+	};
+	return slot;
 }
 
 /*
@@ -111,20 +225,18 @@ struct state_entry *cookies_chain(const u_char *icookie,
 
 static void add_to_cookie_tables(struct state *st)
 {
-	insert_state_entry(cookies_hash_table.name,
-			   cookies_chain(st->st_icookie, st->st_rcookie),
-			   &st->st_cookies_hash_entry);
-	insert_state_entry(icookie_hash_table.name,
-			   icookie_chain(st->st_icookie),
-			   &st->st_icookie_hash_entry);
+	add_hash_table_entry(&cookies_hash_table, st,
+			     &st->st_cookies_hash_entry);
+	add_hash_table_entry(&icookie_hash_table, st,
+			     &st->st_icookie_hash_entry);
 }
 
 static void del_from_cookie_tables(struct state *st)
 {
-	remove_state_entry(cookies_hash_table.name,
-			   &st->st_cookies_hash_entry);
-	remove_state_entry(icookie_hash_table.name,
-			   &st->st_icookie_hash_entry);
+	del_hash_table_entry(&cookies_hash_table,
+			     &st->st_cookies_hash_entry);
+	del_hash_table_entry(&icookie_hash_table,
+			     &st->st_icookie_hash_entry);
 }
 
 /*
@@ -146,14 +258,15 @@ static void del_from_cookie_tables(struct state *st)
 
 void add_state_to_db(struct state *st)
 {
-	/* back-link the hash entry.  */
-	st->st_serialno_hash_entry.state = st;
-	st->st_cookies_hash_entry.state = st;
-	st->st_icookie_hash_entry.state = st;
+	passert(st->st_serialno != SOS_NOBODY);
+	/* serial NR list, entries are only added */
+	st->st_serialno_list_entry = list_entry(&serialno_list_info, st);
+	insert_list_entry(&serialno_list_head,
+			  &st->st_serialno_list_entry);
 
-	insert_state_entry(serialno_hash_table.name,
-			   serialno_chain(st->st_serialno),
-			   &st->st_serialno_hash_entry);
+	/* serial NR to state hash table */
+	add_hash_table_entry(&serialno_hash_table, st,
+			     &st->st_serialno_hash_entry);
 
 	add_to_cookie_tables(st);
 }
@@ -162,7 +275,7 @@ void rehash_state_cookies_in_db(struct state *st)
 {
 	DBG(DBG_CONTROLMORE,
 	    DBG_log("%s: %s: re-hashing state #%lu cookies",
-		    icookie_hash_table.name, cookies_hash_table.name,
+		    icookie_hash_table.info.name, cookies_hash_table.info.name,
 		    st->st_serialno));
 	del_from_cookie_tables(st);
 	add_to_cookie_tables(st);
@@ -170,8 +283,16 @@ void rehash_state_cookies_in_db(struct state *st)
 
 void del_state_from_db(struct state *st)
 {
-	remove_state_entry(serialno_hash_table.name,
-			   &st->st_serialno_hash_entry);
-
+	remove_list_entry(&st->st_serialno_list_entry);
+	del_hash_table_entry(&serialno_hash_table,
+			     &st->st_serialno_hash_entry);
 	del_from_cookie_tables(st);
+}
+
+void init_state_db(void)
+{
+	init_list(&serialno_list_info, &serialno_list_head);
+	init_hash_table(&serialno_hash_table);
+	init_hash_table(&cookies_hash_table);
+	init_hash_table(&icookie_hash_table);
 }

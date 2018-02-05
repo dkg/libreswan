@@ -25,7 +25,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <netinet/in.h>
-
+#include "linux/xfrm.h" /* local (if configured) or system copy */
 #include <libreswan.h>
 #include <libreswan/passert.h>
 
@@ -81,6 +81,20 @@ enum_names dpd_action_names = {
 	NULL
 };
 
+/* netkey SA direction names */
+static const char *const netkey_sa_dir_name[] = {
+	"XFRM_IN",
+	"XFRM_OUT",
+	"XFRM_FWD",
+};
+
+enum_names netkey_sa_dir_names = {
+	XFRM_POLICY_IN, XFRM_POLICY_FWD,
+	ARRAY_REF(netkey_sa_dir_name),
+	NULL, /* prefix */
+	NULL
+};
+
 /* systemd watchdog action names */
 static const char *const sd_action_name[] = {
 	"action: exit", /* daemon exiting */
@@ -103,7 +117,6 @@ static const char *const timer_event_name[] = {
 
 	"EVENT_REINIT_SECRET",
 	"EVENT_SHUNT_SCAN",
-	"EVENT_LOG_DAILY",
 	"EVENT_PENDING_DDNS",
 	"EVENT_SD_WATCHDOG",
 	"EVENT_PENDING_PHASE2",
@@ -128,6 +141,7 @@ static const char *const timer_event_name[] = {
 	"EVENT_v2_RELEASE_WHACK",
 	"EVENT_v2_INITIATE_CHILD",
 	"EVENT_v2_SEND_NEXT_IKE",
+	"EVENT_v2_ADDR_CHANGE",
 	"EVENT_RETAIN",
 };
 
@@ -141,8 +155,8 @@ enum_names timer_event_names = {
 /* State of exchanges */
 static const char *const state_name[] = {
 	"STATE_UNDEFINED",
-	"OPPO_ACQUIRE",
-	"OPPO_GW_DISCOVERED",
+	"STATE_UNUSED_1",
+	"STATE_UNUSED_2",
 	"STATE_MAIN_R0",
 	"STATE_MAIN_I1",
 	"STATE_MAIN_R1",
@@ -207,7 +221,7 @@ static const char *const state_name[] = {
 enum_names state_names = {
 	STATE_UNDEFINED, STATE_IKEv2_ROOF,
 	ARRAY_REF(state_name),
-	NULL, /* prefix */
+	"STATE_", /* prefix */
 	NULL
 };
 
@@ -215,8 +229,8 @@ enum_names state_names = {
 
 static const char *const state_story[] = {
 	"not defined and probably dead (internal)",             /* STATE_UNDEFINED */
-	"got an ACQUIRE message for this pair (internal)",      /* OPPO_QCQUIRE */
-	"got TXT specifying gateway (internal)",                /* OPPO_GW_DISCOVERED */
+	"STATE_UNUSED_1",
+	"STATE_UNUSED_2",
 	"expecting MI1",                                        /* STATE_MAIN_R0 */
 	"sent MI1, expecting MR1",                              /* STATE_MAIN_I1 */
 	"sent MR1, expecting MI2",                              /* STATE_MAIN_R1 */
@@ -345,11 +359,9 @@ enum_names routing_story = {
 
 static const char *const stfstatus_names[] = {
 	"STF_IGNORE",
-	"STF_INLINE",
 	"STF_SUSPEND",
 	"STF_OK",
 	"STF_INTERNAL_ERROR",
-	"STF_TOOMUCHCRYPTO",
 	"STF_FATAL",
 	"STF_DROP",
 	"STF_FAIL"
@@ -376,6 +388,8 @@ const char *const sa_policy_bit_names[] = {
 	"TUNNEL",
 	"PFS",
 	"DISABLEARRIVALCHECK",
+	"DECAP_DSCP",
+	"NOPMTUDISC",
 	"SHUNT0",
 	"SHUNT1",
 	"FAIL0",
@@ -401,6 +415,9 @@ const char *const sa_policy_bit_names[] = {
 	"IKE_FRAG_ALLOW",
 	"IKE_FRAG_FORCE",
 	"NO_IKEPAD",
+	"MOBIKE",
+	"PPK_ALLOW",
+	"PPK_INSIST",
 	"ESN_NO",
 	"ESN_YES",
 	NULL	/* end for bitnamesof() */
@@ -487,6 +504,7 @@ static const enum_names *pluto_enum_names_checklist[] = {
 	&pluto_cryptoimportance_names,
 	&routing_story,
 	&stfstatus_name,
+	&netkey_sa_dir_names,
 };
 
 void init_pluto_constants(void) {

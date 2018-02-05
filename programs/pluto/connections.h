@@ -10,7 +10,7 @@
  * Copyright (C) 2013 Kim Heino <b@bbbs.net>
  * Copyright (C) 2013 Antony Antony <antony@phenome.org>
  * Copyright (C) 2013 Tuomo Soini <tis@foobar.fi>
- * Copyright (C) 2013 Paul Wouters <pwouters@redhat.com>
+ * Copyright (C) 2013-2017 Paul Wouters <pwouters@redhat.com>
  * Copyright (C) 2013 Matt Rogers <mrogers@redhat.com>
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -136,6 +136,7 @@ extern void fmt_policy_prio(policy_prio_t pp, char buf[POLICY_PRIO_BUF]);
 #include "defs.h"
 #include <sys/queue.h>
 #include "id.h"    /* for struct id */
+#include "lmod.h"
 
 struct virtual_t;
 
@@ -210,6 +211,7 @@ struct spd_route {
 struct sa_mark {
 	uint32_t val;
 	uint32_t mask;
+	bool unique;
 };
 struct sa_marks {
 	struct sa_mark in;
@@ -234,7 +236,7 @@ struct connection {
 	char *vti_iface;
 	bool vti_routing; /* should updown perform routing into the vti device */
 	bool vti_shared; /* should updown leave remote empty and not cleanup device on down */
-	unsigned long r_interval; /* initial retransmit time in msec, doubles each time */
+	deltatime_t r_interval; /* initial retransmit time, doubles each time */
 	deltatime_t r_timeout; /* max time (in secs) for one packet exchange attempt */
 	reqid_t sa_reqid;
 	int encapsulation;
@@ -249,6 +251,7 @@ struct connection {
 	bool initial_contact;		/* Send INITIAL_CONTACT (RFC-2407) payload? */
 	bool cisco_unity;		/* Send Unity VID for cisco compatibility */
 	bool fake_strongswan;		/* Send the unversioned strongswan VID */
+	bool mobike;			/* Allow MOBIKE */
 	bool send_vendorid;		/* Send our vendorid? Security vs Debugging help */
 	bool sha2_truncbug;
 	enum ikev1_natt_policy ikev1_natt; /* whether or not to send IKEv1 draft/rfc NATT VIDs */
@@ -292,7 +295,8 @@ struct connection {
 		newest_isakmp_sa,
 		newest_ipsec_sa;
 
-	lset_t extra_debugging;
+	lmod_t extra_debugging;
+	lmod_t extra_impairing;
 
 	/* note: if the client is the gateway, the following must be equal */
 	sa_family_t addr_family;	/* between gateways */
@@ -323,11 +327,10 @@ struct connection {
 	enum send_ca_policy send_ca;
 	char *dnshostname;
 
-	ip_address modecfg_dns1;
-	ip_address modecfg_dns2;
 	struct ip_pool *pool; /* IPv4 addresspool as a range, start end */
-	char *cisco_dns_info; /* scratchpad for writing IP addresses */
-	char *modecfg_domain;
+
+	char *modecfg_dns;
+	char *modecfg_domains;
 	char *modecfg_banner;
 
 	u_int8_t metric;	/* metric for tunnel routes */
@@ -358,7 +361,8 @@ struct whack_message;   /* forward declaration of tag whack_msg */
 extern void add_connection(const struct whack_message *wm);
 extern void initiate_connection(const char *name,
 				int whackfd,
-				lset_t moredebug,
+				lmod_t more_debugging,
+				lmod_t more_impairing,
 				enum crypto_importance importance,
 				char *remote_host);
 extern void restart_connections_by_peer(struct connection *c);
@@ -420,6 +424,7 @@ extern struct connection
 	*find_next_host_connection(struct connection *c,
 		       lset_t req_policy, lset_t policy_exact_mask),
 	*refine_host_connection(const struct state *st, const struct id *peer_id,
+			const struct id *tarzan_id,
 			bool initiator, lset_t auth_policy /* used by ikev1 */,
 			enum keyword_authby, bool *fromcert),
 	*find_client_connection(struct connection *c,
@@ -531,3 +536,5 @@ extern void unshare_connection_end(struct end *e);
 extern void liveness_clear_connection(struct connection *c, char *v);
 
 extern void liveness_action(struct connection *c, const bool ikev2);
+
+extern bool idr_wildmatch(const struct connection *c, const struct id *b);

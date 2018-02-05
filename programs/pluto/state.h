@@ -11,7 +11,9 @@
  * Copyright (C) 2013 Matt Rogers <mrogers@redhat.com>
  * Copyright (C) 2013 Tuomo Soini <tis@foobar.fi>
  * Copyright (C) 2014,2017 Antony Antony <antony@phenome.org>
- * Copyright (C) 2015-2017 Andrew Cagney <cagney@gnu.org>
+ * Copyright (C) 2015-2018 Andrew Cagney
+ * Copyright (C) 2015-2017 Paul Wouters <pwouters@redhat.com>
+ * Copyright (C) 2017 Vukasin Karadzic <vukasin.karadzic@gmail.com>
  * Copyright (C) 2015 Paul Wouters <pwouters@redhat.com>
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -31,15 +33,18 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
-#include <time.h>
 #include "quirks.h"
+
+#include "deltatime.h"
+#include "monotime.h"
 
 #include <nss.h>
 #include <pk11pub.h>
 #include <x509.h>
 
 #include "labeled_ipsec.h"	/* for struct xfrm_user_sec_ctx_ike and friends */
-#include "state_entry.h"
+#include "list_entry.h"
+#include "retransmit.h"
 
 /* Message ID mechanism.
  *
@@ -236,12 +241,7 @@ struct hidden_variables {
 	ip_address st_natd;
 };
 
-#define unset_suspended(st) { \
-	(st)->st_suspended_md = NULL; \
-	(st)->st_suspended_md_func = __FUNCTION__; \
-	(st)->st_suspended_md_line = __LINE__; \
-    }
-
+struct msg_digest *unsuspend_md(struct state *st);
 #define set_suspended(st, md) { \
 	passert((st)->st_suspended_md == NULL); \
 	(st)->st_suspended_md = (md); \
@@ -258,20 +258,46 @@ struct traffic_selector {
 	ip_range net;	/* for now, always happens to be a CIDR */
 };
 
-/* state object: record the state of a (possibly nascent) SA
+/*
+ * Abstract state machine that drives the parent and child SA.
+ *
+ * IKEv1 and IKEv2 construct states using this as a base.
+ */
+struct finite_state {
+	enum state_kind fs_state;
+	const char *fs_name;
+	const char *fs_short_name;
+	const char *fs_story;
+	lset_t fs_flags;
+	enum event_type fs_timeout_event;
+	const void *fs_microcode;	/* aka edge */
+};
+
+void lswlog_finite_state(struct lswlog *buf, const struct finite_state *fs);
+
+/* this includes space for lurking STATE_IKEv2_ROOF */
+extern const struct finite_state *finite_states[STATE_IKE_ROOF];
+
+/*
+ * state object: record the state of a (possibly nascent) parent or
+ * child SA
  *
  * Invariants (violated only during short transitions):
+ *
  * - each state object will be in statetable exactly once.
+ *
  * - each state object will always have a pending event.
  *   This prevents leaks.
  */
 struct state {
 	so_serial_t st_serialno;                /* serial number (for seniority)*/
 	so_serial_t st_clonedfrom;              /* serial number of parent */
-	so_serial_t st_ike_pred; /* IKEv2: replacing established IKE SA */
-	so_serial_t st_ipsec_pred; /* IKEv2: replacing established IPsec SA */
+	so_serial_t st_ike_pred;		/* IKEv2: replacing established IKE SA */
+	so_serial_t st_ipsec_pred;		/* replacing established IPsec SA */
 
+#ifdef XAUTH_HAVE_PAM
 	struct xauth *st_xauth;			/* per state xauth/pam thread */
+#endif
 
 	bool st_ikev2;                          /* is this an IKEv2 state? */
 	bool st_ikev2_no_del;                   /* suppress sending DELETE - eg replaced conn */
@@ -284,10 +310,6 @@ struct state {
 						 * Single copy: close when
 						 * freeing struct.
 						 */
-
-	struct msg_digest *st_suspended_md;     /* suspended state-transition */
-	const char        *st_suspended_md_func;
-	int st_suspended_md_line;
 
 	/* collected received fragments */
 	struct ike_frag *st_v1_rfrags;
@@ -318,6 +340,14 @@ struct state {
 	const struct iface_port *st_interface;  /* where to send from */  /* dhr 2013: why? There was already connection->interface */
 	ip_address st_localaddr;                /* where to send them from */
 	u_int16_t st_localport;
+
+	/* IKEv2 MOBIKE probe copies */
+	ip_address st_mobike_remoteaddr;
+	u_int16_t st_mobike_remoteport;
+	const struct iface_port *st_mobike_interface;
+	ip_address st_deleted_local_addr;	/* kernel deleted address */
+	ip_address st_mobike_localaddr;		/* new address to initiate MOBIKE */
+	u_int16_t st_mobike_localport;		/* is this necessary ? */
 
 	/** IKEv1-only things **/
 
@@ -368,6 +398,9 @@ struct state {
 
 	/** end of IKEv2-only things **/
 
+	char *st_seen_cfg_dns; /* obtained internal nameserver IP's */
+	char *st_seen_cfg_domains; /* obtained internal domain names */
+	char *st_seen_cfg_banner; /* obtained banner */
 
 	/* symmetric stuff */
 
@@ -412,33 +445,40 @@ struct state {
 	bool st_peer_alt_id;	/* scratchpad for writing we found alt peer id in CERT */
 
 	/*
-	 * Diffie-Hellman exchange values
+	 * Diffie-Hellman exchange values.
 	 *
-	 * st_sec_nss is our local ephemeral secret.  Its sole use is an input
-	 * in the calculation of the shared secret.
+	 * At any point only one of the state or a crypto helper
+	 * (request) owns the secret.
 	 *
-	 * st_gi and st_gr (above) are the initiator and responder public
-	 * values that are shipped in KE payloads.
-	 * On initiator: st_gi = GROUP_GENERATOR ^ st_sec_nss
-	 *               st_gr comes from KE
-	 * On responder: st_gi comes from KE
-	 *               st_gr = GROUP_GENERATOR ^ st_sec_nss
+	 * However, because of the way IKEv1 and IKEv2 handle the DH
+	 * exchange things get a little messy.
 	 *
-	 * st_pubk_nss is ???
+	 * In IKEv2, since DH and auth involve separate exchanges and
+	 * packets, the DH derivation code is free to 'consume' the
+	 * secret.  But it doesn't ...
 	 *
-	 * st_shared_nss is the output of the DH: an ephemeral secret
-	 * shared by the two ends.  Of course the other end might
-	 * be a man in the middle unless we authenticate.
-	 * st_shared_nss = GROUP_GENERATOR ^ (initiator's st_sec_nss * responder's st_sec_nss)
-	 *               = st_gr ^ initiator's st_sec_nss
-	 *               = sg_gi ^ responder's st_sec_nss
+	 * In IKEv1, both the the DH exchange and authentication can
+	 * be combined into a single packet.  Consequently, processing
+	 * consits of: first DH is used to derive the shared secret
+	 * from DH_SECRET and the keying material; and then
+	 * authentication is performed.  However, should
+	 * authentication fail, everything thing derived from that
+	 * packet gets discarded and this includes the DH derived
+	 * shared secret.  When the real packet arrives (or a
+	 * re-transmit), the whole process is performed again, and
+	 * using the same DH_SECRET.
+	 *
+	 * Consequently, when the crypto helper gets created, it gets
+	 * ownership of the DH_SECRET, and then when it finishes,
+	 * ownership is passed back to state.
+	 *
+	 * This all assumes that the crypto helper gets to delete
+	 * DH_SECRET iff state has already been deleted.
+	 *
+	 * (An alternative would be to reference count dh_secret; or
+	 * copy the underlying keying material using NSS, hmm, NSS).
 	 */
-
-	bool st_sec_in_use;		/* bool: do st_sec_nss/st_pubk_nss hold values */
-
-	SECKEYPrivateKey *st_sec_nss;	/* our secret (owned by NSS) */
-
-	SECKEYPublicKey *st_pubk_nss;	/* DH public key (owned by NSS) */
+	struct dh_secret *st_dh_secret;
 
 	PK11SymKey *st_shared_nss;	/* Derived shared secret
 					 * Note: during Quick Mode,
@@ -447,16 +487,20 @@ struct state {
 					 */
 	/* end of DH values */
 
-	enum crypto_importance st_import;       /* relative priority of crypto
-						 * operations
+	enum crypto_importance st_import;       /* relative priority
+						 * of crypto operations.
+						 * XXX: probably.
 						 */
 
 	/* In a Phase 1 state, preserve peer's public key after authentication */
 	struct pubkey *st_peer_pubkey;
 
-	enum state_kind st_state;       /* State of exchange */
+#define st_state st_finite_state->fs_state
+#define st_state_name st_finite_state->fs_name
+#define st_state_story st_finite_state->fs_story
+	const struct finite_state *st_finite_state;	/* Current FSM state */
 
-	u_int32_t st_retransmit;	/* Number of retransmits */
+	retransmit_t st_retransmit;	/* retransmit counters; opaque */
 	unsigned long st_try;		/* Number of times rekeying attempted.
 					 * 0 means the only time.
 					 */
@@ -466,11 +510,50 @@ struct state {
 					 * st_outbound_count
 					 */
 
-	bool st_calculating;                    /* set to TRUE, if we are
-							 * performing cryptographic
-							 * operations on this state at
-							 * this time
-							 */
+	/*
+	 * ST_OFFLOADED_TASK, when non-NULL, is the task that has been
+	 * offloaded to a crypto helper (or for that matter a child
+	 * process or anything).
+	 *
+	 * ST_V1_OFFLOADED_TASK_IN_BACKGROUND is more complicated:
+	 *
+	 * In IKEv1, the responder in main mode state MAIN_R1, after
+	 * sending its KE+NONCE, will kick off the shared DH secret
+	 * calculation in the 'background' - that is before it has
+	 * received the first encrypted packet and actually needs the
+	 * shared DH secret.  The responder than transitions to state
+	 * MAIN_R2; and ST_SUSPENDED_MD will be left NULL and the
+	 * above is set to TRUE.
+	 *
+	 * Later, if the shared DH secret is still being calculated
+	 * when the responder receives the next, and encrypted,
+	 * packet, that packet will be saved in .st_suspended_md and
+	 * things will really suspend (instead of clearing
+	 * ST_V1_OFFLOADED_TASK_IN_BACKGROUND, ST_SUSPENDED_MD is used
+	 * as the state-busy marker).
+	 *
+	 * IKEv2 doesn't have this complexity and instead waits for
+	 * that encrypted packet before kicking off the shared DH
+	 * secret calculation.
+	 *
+	 * But wait, with ST_SUSPENDED_MD, there's more:
+	 *
+	 * The initial initiator (both IKEv1 and IKEv2), while
+	 * KE+NONCE is being calculated, in addition to setting
+	 * ST_OFFLOADED_TASK, will have ST_SUSPENDED_MD set to a
+	 * 'fake_md' (grep for it).  This is because the initial
+	 * initator can't have a real MD, and (presumably) faking one
+	 * stops a core dump - the MD contains a pointer to ST and
+	 * code likes to use that to find its state.  In the past
+	 * (before ST_OFFLOADED_TASK was added), its presence would
+	 * have also served as a state-is-busy marker.
+	 */
+	struct pluto_crypto_req_cont *st_offloaded_task;
+	bool st_v1_offloaded_task_in_background;
+
+	struct msg_digest *st_suspended_md;     /* suspended state-transition */
+	const char        *st_suspended_md_func;
+	int st_suspended_md_line;
 
 	chunk_t st_p1isa;	/* Phase 1 initiator SA (Payload) for HASH */
 
@@ -493,6 +576,18 @@ struct state {
 	chunk_t st_skey_chunk_SK_pi;
 	chunk_t st_skey_chunk_SK_pr;
 
+	/*
+	 * Post-quantum preshared key variables
+	 */
+	char *st_ppk_dynamic_filename;		/* Filename containing dynamic PPKs */
+	bool st_ppk_used;			/* both ends agreed on PPK ID and PPK */
+	bool st_seen_ppk;			/* does remote peer support PPK? */
+
+	chunk_t st_no_ppk_auth;
+	PK11SymKey *st_sk_d_no_ppk;
+	PK11SymKey *st_sk_pi_no_ppk;
+	PK11SymKey *st_sk_pr_no_ppk;
+
 	/* connection included in AUTH */
 	struct traffic_selector st_ts_this;
 	struct traffic_selector st_ts_that;
@@ -501,12 +596,14 @@ struct state {
 
 	struct pluto_event *st_event;		/* timer event for this state object */
 
+	/* state list entry */
+	struct list_entry st_serialno_list_entry;
 	/* SERIALNO hash table entry */
-	struct state_entry st_serialno_hash_entry;
+	struct list_entry st_serialno_hash_entry;
 	/* ICOOKIE:RCOOKIE hash table entry */
-	struct state_entry st_cookies_hash_entry;
+	struct list_entry st_cookies_hash_entry;
 	/* ICOOKIE hash table entry */
-	struct state_entry st_icookie_hash_entry;
+	struct list_entry st_icookie_hash_entry;
 
 	struct hidden_variables hidden_variables;
 
@@ -518,6 +615,8 @@ struct state {
 	struct pluto_event *st_liveness_event;
 	struct pluto_event *st_rel_whack_event;
 	struct pluto_event *st_send_xauth_event;
+	struct pluto_event *st_addr_change_event;
+
 
 	/* RFC 3706 Dead Peer Detection */
 	monotime_t st_last_dpd;			/* Time of last DPD transmit (0 means never?) */
@@ -535,6 +634,9 @@ struct state {
 	bool st_seen_fragments;                 /* did we receive ike fragments from peer, if so use them in return as well */
 	bool st_seen_no_tfc;			/* did we receive ESP_TFC_PADDING_NOT_SUPPORTED */
 	bool st_seen_use_transport;		/* did we receive USE_TRANSPORT_MODE */
+	bool st_seen_mobike;			/* did we receive MOBIKE */
+	bool st_sent_mobike;			/* sent MOBIKE notify */
+	bool st_seen_nonats;			/* did we receive NO_NATS_ALLOWED */
 	generalName_t *st_requested_ca;		/* collected certificate requests */
 	u_int8_t st_reply_xchg;
 };
@@ -568,16 +670,17 @@ extern void delete_my_family(struct state *pst, bool v2_responder_state);
 
 extern struct state
 	*duplicate_state(struct state *st, sa_t ipsec),
-	*find_state_ikev1(const u_char *icookie,
-			  const u_char *rcookie,
-			  msgid_t msgid),
 	*state_with_serialno(so_serial_t sn),
 	*find_phase2_state_to_delete(const struct state *p1st, u_int8_t protoid,
 			     ipsec_spi_t spi, bool *bogus),
 	*find_phase1_state(const struct connection *c, lset_t ok_states),
 	*find_likely_sender(size_t packet_len, u_char * packet);
 
-extern bool find_pending_phas2(const so_serial_t psn,
+struct state *find_state_ikev1(const uint8_t *icookie, const uint8_t *rcookie,
+			       msgid_t msgid);
+struct state *find_state_ikev1_init(const uint8_t *icookie, msgid_t msgid);
+
+extern bool find_pending_phase2(const so_serial_t psn,
 					const struct connection *c,
 					lset_t ok_states);
 
@@ -653,15 +756,22 @@ extern bool dpd_active_locally(const struct state *st);
 #define fake_state(st, new_state) log_state((st), (new_state))
 extern void change_state(struct state *st, enum state_kind new_state);
 
-extern bool state_busy(const struct state *st);
-extern void clear_dh_from_state(struct state *st);
+extern bool state_is_busy(const struct state *st);
+extern bool verbose_state_busy(const struct state *st);
 extern bool drop_new_exchanges(void);
 extern bool require_ddos_cookies(void);
 extern void show_globalstate_status(void);
 extern void set_newest_ipsec_sa(const char *m, struct state *const st);
 extern void update_ike_endpoints(struct state *st, const struct msg_digest *md);
+extern bool update_mobike_endpoints(struct state *st, const struct msg_digest *md);
 extern void ikev2_expire_unused_parent(struct state *pst);
 
 bool shared_phase1_connection(const struct connection *c);
+
+extern void record_deladdr(ip_address *ip, char *a_type);
+extern void record_newaddr(ip_address *ip, char *a_type);
+
+extern void append_st_cfg_domain(struct state *st, const char *dnsip);
+extern void append_st_cfg_dns(struct state *st, const char *dnsip);
 
 #endif /* _STATE_H */

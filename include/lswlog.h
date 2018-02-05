@@ -36,20 +36,24 @@
  * If it does, they will be interpreted by the C preprocesser
  * as macro argument separators.  This happens accidentally if
  * multiple variables are declared in one declaration.
+ *
+ * IMPAIR currently uses the same lset_t as DBG.  Define a separate
+ * macro so that, one day, that can change.
  */
 
 extern lset_t cur_debugging;	/* current debugging level */
 
 #define DBGP(cond)	(cur_debugging & (cond))
+#define IMPAIR(BEHAVIOUR) (cur_debugging & (IMPAIR_##BEHAVIOUR))
 
 #define DEBUG_PREFIX "| "
 
 #define DBG(cond, action)	{ if (DBGP(cond)) { action; } }
 
 /* signature needs to match printf() */
-int lswlog_dbg(const char *message, ...) PRINTF_LIKE(1);
+#define DBG_log libreswan_DBG_log
+int libreswan_DBG_log(const char *message, ...) PRINTF_LIKE(1);
 
-#define DBG_log lswlog_dbg
 #define DBG_dump libreswan_DBG_dump
 extern void libreswan_DBG_dump(const char *label, const void *p, size_t len);
 
@@ -77,11 +81,9 @@ extern bool log_to_stderr;          /* should log go to stderr? */
 
 /*
  * For stand-alone tools.
- *
- * XXX: can "progname" be made private to lswlog.c?
  */
-extern char *progname;
-extern void tool_init_log(char *progname);
+extern const char *progname;
+extern void tool_init_log(const char *name);
 
 /* Codes for status messages returned to whack.
  * These are 3 digit decimal numerals.  The structure
@@ -144,14 +146,6 @@ enum rc_type {
 };
 
 /*
- * Everything goes through here.
- *
- * Like vprintf() this modifies AP; to preserve AP use C99's
- * va_copy().
- */
-extern void libreswan_vloglog(enum rc_type rc, const char *fmt, va_list ap);
-
-/*
  * Log to both main log and whack log at level RC.
  */
 #define loglog	libreswan_loglog
@@ -170,21 +164,21 @@ extern int libreswan_log(const char *fmt, ...) PRINTF_LIKE(1);
  * be saved.
  */
 
-void lswlog_log_errno(int e, const char *prefix,
-		      const char *message, ...) PRINTF_LIKE(3);
-void lswlog_exit(enum rc_type rc) NEVER_RETURNS;
+void libreswan_log_errno(int e, const char *prefix,
+			 const char *message, ...) PRINTF_LIKE(3);
+void libreswan_exit(enum rc_type rc) NEVER_RETURNS;
 
 #define LOG_ERRNO(ERRNO, ...)						\
 	{								\
 		int log_errno = ERRNO; /* save the value */		\
-		lswlog_log_errno(log_errno, "ERROR: ", __VA_ARGS__);	\
+		libreswan_log_errno(log_errno, "ERROR: ", __VA_ARGS__);	\
 	}
 
 #define EXIT_LOG_ERRNO(ERRNO, ...)					\
 	{								\
 		int exit_log_errno = ERRNO; /* save the value */	\
-		lswlog_log_errno(exit_log_errno, "FATAL ERROR: ", __VA_ARGS__); \
-		lswlog_exit(PLUTO_EXIT_FAIL);				\
+		libreswan_log_errno(exit_log_errno, "FATAL ERROR: ", __VA_ARGS__); \
+		libreswan_exit(PLUTO_EXIT_FAIL);			\
 	}
 
 /*
@@ -209,7 +203,10 @@ struct lswlog;
  * Similar to C99 snprintf() et.al., always return the untruncated
  * message length (the value can never be negative).
  *
- * XXX: is returning the length useful?
+ * These functions return the number of bytes that should have been
+ * written to the buffer (i.e., ignore truncation).  While probably
+ * not directly useful, it provides a sink for functions that insist
+ * on their return value being consumed.
  */
 
 size_t lswlogvf(struct lswlog *log, const char *format, va_list ap);
@@ -217,8 +214,6 @@ size_t lswlogf(struct lswlog *log, const char *format, ...) PRINTF_LIKE(2);
 size_t lswlogs(struct lswlog *log, const char *string);
 size_t lswlogl(struct lswlog *log, struct lswlog *buf);
 
-/* _(SECERR: N (0xX): <error-string>) */
-size_t lswlog_pr_error(struct lswlog *log);
 /* _(in FUNC() at FILE:LINE) */
 size_t lswlog_source_line(struct lswlog *log, const char *func,
 			  const char *file, unsigned long line);
@@ -231,23 +226,42 @@ size_t lswlog_bytes(struct lswlog *log, const uint8_t *bytes,
 		    size_t sizeof_bytes);
 
 /*
- * The logging output streams used by library code.
+ * The logging output streams used by libreswan.
  *
- * So far three^D^D^D four have been identified; and lets not forget
- * STDOUT and STDERR which are also written to directly.
+ * So far three^D^D^D^D^D four^D^D^D^D five^D^D^D^D six have been
+ * identified; and lets not forget that code writes to STDOUT and
+ * STDERR directly.
  *
- * These functions can assume that the buffer already contains
- * relevant prefixes and just needs to be sent out.
+ * The streams differ in the syslog severity and what PREFIX is
+ * assumed to be present.
  *
- * For logging stream, the output can may also be directed to whack
- * stream.  When this happens, RC is prefixed to the already formatted
- * message.
+ *                SEVERITY     WHACK   PREFIX
+ *   log        LOG_WARNING     -      state
+ *   debug      LOG_DEBUG       -      "| "
+ *   log_whack  LOG_WARNING    yes     state
+ *   error      LOG_ERR         -      ERROR ..
+ *   whack         -           yes     NNN
+ *   file          -            -       -
+ *
+ * The streams will then add additional prefixes as required.  For
+ * instance, the log_whack stream will prefix a timestamp when sending
+ * to a file (optional), and will prefix NNN(RC) when sending to
+ * whack.
+ *
+ * For tools, the log stream goes to STDERR when enabled; and the
+ * debug stream goes to STDERR conditional on debug flags.
+ *
+ * Return size_t - the number of bytes written - so that
+ * implementations have somewhere to send values that should not be
+ * ignored; for instance fwrite() :-/
  */
 
+void lswlog_to_log_stream(struct lswlog *buf);
 void lswlog_to_debug_stream(struct lswlog *buf);
 void lswlog_to_error_stream(struct lswlog *buf);
-void lswlog_to_logger_stream(struct lswlog *buf, enum rc_type rc);
+void lswlog_to_log_whack_stream(struct lswlog *buf, enum rc_type rc);
 void lswlog_to_whack_stream(struct lswlog *buf);
+size_t lswlog_to_file_stream(struct lswlog *buf, FILE *file);
 
 /*
  * Code wrappers that cover up the details of allocating,
@@ -328,7 +342,17 @@ void lswbuf(struct lswlog *log)
 		LSWBUF_(BUF)
 
 /*
- * Write output to a FILE stream as a single block.
+ * Various logging constructs all based on this template.
+ */
+
+#define LSWLOG_(PREDICATE, BUF, PREFIX, SUFFIX)				\
+	for (bool lswlog_p = PREDICATE; lswlog_p; lswlog_p = false)	\
+		LSWBUF_(BUF)						\
+			for (PREFIX; lswlog_p; lswlog_p = false, SUFFIX)
+
+/*
+ * Write a line of output to the FILE stream as a single block;
+ * includes an implicit new-line.
  *
  * For instance:
  */
@@ -343,12 +367,17 @@ void lswlog_file(FILE f)
 #endif
 
 #define LSWLOG_FILE(FILE, BUF)						\
-	for (bool lswlog_p = true; lswlog_p; lswlog_p = false)		\
-		LSWBUF_(BUF)						\
-			for (; lswlog_p;				\
-			     fwrite(BUF->array, BUF->len, 1, FILE),	\
-				     lswlog_p = false)
+	LSWLOG_(true, BUF,						\
+		,							\
+		lswlog_to_file_stream(BUF, FILE))
 
+/*
+ * Save the output in a string.
+ */
+#define LSWLOG_STRING(STRING, BUF)		\
+	LSWLOG_(true, BUF,			\
+		,				\
+		STRING = clone_str(BUF->array, "lswlog string"))
 
 /*
  * Send output to WHACK (if attached).
@@ -359,11 +388,9 @@ void lswlog_file(FILE f)
  */
 
 #define LSWLOG_WHACK(RC, BUF)						\
-	for (bool lswlog_p = whack_log_p(); lswlog_p; lswlog_p = false) \
-		LSWBUF_(BUF)						\
-			for (whack_log_pre(RC, BUF); lswlog_p;		\
-			     lswlog_to_whack_stream(BUF),		\
-				     lswlog_p = false)
+	LSWLOG_(whack_log_p(), BUF,					\
+		whack_log_pre(RC, BUF),					\
+		lswlog_to_whack_stream(BUF))
 
 /*
  * Send debug output to the logging streams (but not WHACK).
@@ -372,27 +399,121 @@ void lswlog_file(FILE f)
 void lswlog_dbg_pre(struct lswlog *buf);
 
 #define LSWDBG_(PREDICATE, BUF)						\
-	for (bool lswlog_p = PREDICATE; lswlog_p; lswlog_p = false)	\
-		LSWBUF_(BUF)						\
-			for (lswlog_dbg_pre(BUF); lswlog_p;		\
-			     lswlog_to_debug_stream(BUF),		\
-				     lswlog_p = false)
+	LSWLOG_(PREDICATE, BUF,						\
+		lswlog_dbg_pre(BUF),					\
+		lswlog_to_debug_stream(BUF))
 
 #define LSWDBGP(DEBUG, BUF) LSWDBG_(DBGP(DEBUG), BUF)
-#define LSWDBG(BUF) LSWDBG_(true, BUF)
+#define LSWLOG_DEBUG(BUF) LSWDBG_(true, BUF)
 
 /*
- * Send log output the logging streams (and WHACK).
+ * Send log output the logging streams and WHACK (if connected).
  */
 
-void lswlog_pre(struct lswlog *buf);
+void lswlog_log_prefix(struct lswlog *buf);
 
-#define LSWLOG(BUF)							\
+#define LSWLOG_LOG_WHACK(RC, BUF)					\
+	LSWLOG_(true, BUF,						\
+		lswlog_log_prefix(BUF),					\
+		lswlog_to_log_whack_stream(BUF, RC))
+
+#define LSWLOG(BUF)  LSWLOG_LOG_WHACK(RC_LOG, BUF)
+
+/*
+ * Send log output to the logging stream but not WHACK.
+ */
+
+#define LSWLOG_LOG(BUF)							\
+	LSWLOG_(true, BUF,						\
+		lswlog_log_prefix(BUF),					\
+		lswlog_to_log_stream(BUF))
+
+/*
+ * Send an expectation failure to everwhere.
+ */
+
+
+/*
+ * Check/log a pexpect failure to the "panic" channel.
+ *
+ * Notes:
+ *
+ * According to C99, the expansion of PEXPECT_LOG(FMT) will include a
+ * stray comma vis: "pexpect_log(file, line, FMT,)".  Plenty of
+ * workarounds.
+ *
+ * "pexpect()" does use the shorter statement "if (!(pred))" in the
+ * below as it will suppresses -Wparen (i.e., assignment in if
+ * statement).
+ */
+
+void lswlog_pexpect_prefix(struct lswlog *buf);
+void lswlog_pexpect_suffix(struct lswlog *buf, const char *func,
+			   const char *file, unsigned long line);
+
+#define LSWLOG_PEXPECT_SOURCE(FUNC, FILE, LINE, BUF)	   \
+	LSWLOG_(true, BUF,				   \
+		lswlog_pexpect_prefix(BUF),		   \
+		lswlog_pexpect_suffix(BUF, FUNC, FILE, LINE))
+
+#define LSWLOG_PEXPECT(BUF)				   \
+	LSWLOG_PEXPECT_SOURCE(__func__, PASSERT_BASENAME, __LINE__, BUF)
+
+/* old style */
+
+#define PEXPECT_LOG(FMT, ...)						\
+	LSWLOG_PEXPECT(pexpect_buf) {					\
+		lswlogf(pexpect_buf, FMT, __VA_ARGS__);			\
+	}
+
+#define pexpect(ASSERTION) {						\
+		/* wrapping ASSERTION in paren suppresses -Wparen */	\
+		bool assertion__ = ASSERTION; /* no paren */		\
+		if (!assertion__) {					\
+			LSWLOG_PEXPECT(pexpect_buf) {			\
+				lswlogf(pexpect_buf, "%s", #ASSERTION);	\
+			}						\
+		}							\
+	}
+
+/*
+ * Send an assertion failure to everwhere.
+ */
+
+void lswlog_passert_prefix(struct lswlog *buf);
+void lswlog_passert_suffix(struct lswlog *buf, const char *func,
+			   const char *file, unsigned long line) NEVER_RETURNS;
+
+#define LSWLOG_PASSERT_SOURCE(FUNC, FILE, LINE, BUF)	   \
+	LSWLOG_(true, BUF,				   \
+		lswlog_passert_prefix(BUF),		   \
+		lswlog_passert_suffix(BUF, FUNC, FILE, LINE))
+
+#define LSWLOG_PASSERT(BUF)			\
+	LSWLOG_PASSERT_SOURCE(__func__, PASSERT_BASENAME, __LINE__, BUF)
+
+
+/*
+ * Both include ERRNO and send to ERROR stream.
+ *
+ * XXX: Is error stream really the right place for this?
+ */
+
+void lswlog_errno_prefix(struct lswlog *buf, const char *prefix);
+void lswlog_errno_suffix(struct lswlog *buf, int e);
+
+#define LSWLOG_ERRNO_(PREFIX, ERRNO, BUF)				\
 	for (bool lswlog_p = true; lswlog_p; lswlog_p = false)		\
-		LSWBUF_(BUF)						\
-			for (lswlog_pre(BUF); lswlog_p;			\
-			     lswlog_to_logger_stream(BUF, RC_LOG),	\
-				     lswlog_p = false)
+		for (int lswlog_errno = ERRNO; lswlog_p; lswlog_p = false) \
+			LSWBUF_(BUF)					\
+				for (lswlog_errno_prefix(buf, PREFIX);	\
+				     lswlog_p;				\
+				     lswlog_p = false,			\
+					     lswlog_errno_suffix(buf, lswlog_errno))
+
+#define LSWLOG_ERRNO(ERRNO, BUF)					\
+	LSWLOG_ERRNO_("ERROR: ", ERRNO, BUF)
+
 
 /*
  * ARRAY, a previously allocated array, containing the accumulated
@@ -441,19 +562,13 @@ struct lswlog {
  */
 extern int (*lswlog_debugf)(const char *format, ...) PRINTF_LIKE(1);
 
-#define LSWBUF_CANARY -2
-
-#define PASSERT_LSWBUF(BUF)						\
-	do {								\
-		passert(BUF->dots != NULL);				\
-		/* LEN/BOUND well defined */				\
-		passert((BUF)->len <= (BUF)->bound);			\
-		passert((BUF)->bound < (BUF)->roof);			\
-		/* always NUL terminated */				\
-		passert((BUF)->array[(BUF)->len] == '\0');		\
-		passert((BUF)->array[(BUF)->bound] == '\0');		\
-		/* overflow? */						\
-		passert((BUF)->array[(BUF)->roof] == LSWBUF_CANARY);	\
-	} while (false)
+/*
+ * Since 'char' can be unsigned need to cast -2 onto a char sized
+ * value.
+ *
+ * The octal equivalent would be something like '\376' but who uses
+ * octal :-)
+ */
+#define LSWBUF_CANARY ((char) -2)
 
 #endif /* _LSWLOG_H_ */

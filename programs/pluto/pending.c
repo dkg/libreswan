@@ -50,6 +50,7 @@
 #include "timer.h"
 #include "pluto_crypt.h"  /* for pluto_crypto_req & pluto_crypto_req_cont */
 #include "ikev2.h"
+#include "ip_address.h"
 
 /* struct pending, the structure representing IPsec SA
  * negotiations delayed until a Keying Channel has been negotiated.
@@ -264,13 +265,13 @@ void unpend(struct state *st, struct connection *cc)
 					       );
 
 			} else if (!st->st_ikev2) {
-				(void) quick_outI1(p->whack_sock, st, p->connection,
-						   p->policy,
-						   p->try, p->replacing
+				quick_outI1(p->whack_sock, st, p->connection,
+					    p->policy,
+					    p->try, p->replacing
 #ifdef HAVE_LABELED_IPSEC
-						   , p->uctx
+					    , p->uctx
 #endif
-						   );
+					    );
 			} else {
 				/*
 				 * IKEv2 AUTH negotiation include child.
@@ -324,7 +325,7 @@ struct connection *first_pending(const struct state *st,
 /*
  * Look for phase2s that were waiting for a phase 1.  If the time that we
  * have been pending exceeds a DPD timeout that was set, then we call the
- * dpd_timeout() on this state, which hopefully kills this pending state.
+ * dpd_timeout() on this state.  We hope this kills the pending state.
  */
 bool pending_check_timeout(const struct connection *c)
 {
@@ -337,8 +338,8 @@ bool pending_check_timeout(const struct connection *c)
 			DBG_log("checking connection \"%s\"%s for stuck phase 2s (waited %jd, patience 3*%jd)",
 				c->name,
 				fmt_conn_instance(c, cib),
-				(intmax_t) deltasecs(waited),
-				(intmax_t) deltasecs(c->dpd_timeout));
+				deltasecs(waited),
+				deltasecs(c->dpd_timeout));
 			});
 
 		if (deltasecs(c->dpd_timeout) > 0) {

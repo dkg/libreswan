@@ -26,7 +26,7 @@ west #
 134 "westnet-eastnet-ikev2" #2: STATE_PARENT_I2: sent v2I2, expected v2R2 {auth=IKEv2 cipher=aes_128 integ=sha1_96 prf=sha group=MODP2048}
 002 "westnet-eastnet-ikev2" #2: suppressing retransmit because IMPAIR_RETRANSMITS is set.
 002 "westnet-eastnet-ikev2" #2: IKEv2 mode peer ID is ID_FQDN: '@east'
-002 "westnet-eastnet-ikev2" #2: local policy requires Transport Mode but peer requires required Tunnel Mode
+003 "westnet-eastnet-ikev2" #2: local policy requires Transport Mode but peer requires required Tunnel Mode
 214 "westnet-eastnet-ikev2" #2: STATE_PARENT_I2: v2N_NO_PROPOSAL_CHOSEN
 west #
  ping -n -c 4 -I 192.0.1.254 192.0.2.254
@@ -50,18 +50,6 @@ src 192.1.2.23 dst 192.1.2.45
 	replay-window 0 
 	sel src 192.1.2.23/32 dst 192.1.2.45/32 
 XFRM policy:
-src ::/0 dst ::/0 proto ipv6-icmp type 135 
-	dir fwd priority 1 ptype main 
-src ::/0 dst ::/0 proto ipv6-icmp type 135 
-	dir in priority 1 ptype main 
-src ::/0 dst ::/0 proto ipv6-icmp type 135 
-	dir out priority 1 ptype main 
-src ::/0 dst ::/0 proto ipv6-icmp type 136 
-	dir fwd priority 1 ptype main 
-src ::/0 dst ::/0 proto ipv6-icmp type 136 
-	dir in priority 1 ptype main 
-src ::/0 dst ::/0 proto ipv6-icmp type 136 
-	dir out priority 1 ptype main 
 XFRM done
 IPSEC mangle TABLES
 NEW_IPSEC_CONN mangle TABLES

@@ -77,8 +77,11 @@
 
 #include "packet.h"  /* for pb_stream in nat_traversal.h */
 #include "nat_traversal.h"
-
+#include "ip_address.h"
 #include "lswfips.h" /* for libreswan_fipsmode() */
+
+/* which kernel interface to use */
+enum kernel_interface kern_interface = USE_NETKEY;
 
 bool can_do_IPcomp = TRUE;  /* can system actually perform IPCOMP? */
 
@@ -89,12 +92,6 @@ bool can_do_IPcomp = TRUE;  /* can system actually perform IPCOMP? */
 #define routes_agree(c, d) ((c)->interface->ip_dev == (d)->interface->ip_dev \
 				&& sameaddr(&(c)->spd.this.host_nexthop, \
 					&(d)->spd.this.host_nexthop))
-
-/* forward declarations */
-static void set_text_said(char *text_said,
-			  const ip_address *dst,
-			  ipsec_spi_t spi,
-			  int proto);
 
 const struct pfkey_proto_info null_proto_info[2] = {
 	{
@@ -512,12 +509,14 @@ int fmt_common_shell_out(char *buf, int blen, const struct connection *c,
 
 	connmarkstr[0] = '\0';
 	if (c->sa_marks.in.val != 0) {
-		snprintf(connmarkstr, sizeof(connmarkstr), "CONNMARK_IN=%"PRIu32"/%#010x ",
+		snprintf(connmarkstr, sizeof(connmarkstr),
+			"CONNMARK_IN=%" PRIu32 "/%#08" PRIx32 " ",
 			c->sa_marks.in.val, c->sa_marks.in.mask);
 	}
 	if (c->sa_marks.out.val != 0) {
 		size_t inend = strlen(connmarkstr);
-		snprintf(connmarkstr+inend, sizeof(connmarkstr)-inend, "CONNMARK_OUT=%"PRIu32"/%#010x ",
+		snprintf(connmarkstr+inend, sizeof(connmarkstr)-inend,
+			"CONNMARK_OUT=%" PRIu32 "/%#08" PRIx32 " ",
 			c->sa_marks.out.val, c->sa_marks.out.mask);
 	}
 
@@ -538,12 +537,12 @@ int fmt_common_shell_out(char *buf, int blen, const struct connection *c,
 
 		for (p = pluto_pubkeys; p != NULL; p = p->next) {
 			struct pubkey *key = p->key;
-			int pathlen;
+			int pathlen;	/* value ignored */
 
 			if (key->alg == PUBKEY_ALG_RSA &&
-				same_id(&sr->that.id, &key->id) &&
-				trusted_ca_nss(key->issuer, sr->that.ca,
-					&pathlen)) {
+			    same_id(&sr->that.id, &key->id) &&
+			    trusted_ca_nss(key->issuer, sr->that.ca, &pathlen))
+			{
 				dntoa_or_null(peerca_str, IDTOA_BUF,
 					key->issuer, "");
 				escape_metachar(peerca_str, secure_peerca_str,
@@ -561,48 +560,50 @@ int fmt_common_shell_out(char *buf, int blen, const struct connection *c,
 		"PLUTO_INTERFACE='%s' "
 		"%s" /* possible PLUTO_NEXT_HOP */
 		"PLUTO_ME='%s' "
-		"PLUTO_MY_ID='%s' "
+		"PLUTO_MY_ID='%s' "	/* 5 */
 		"PLUTO_MY_CLIENT='%s' "
 		"PLUTO_MY_CLIENT_NET='%s' "
 		"PLUTO_MY_CLIENT_MASK='%s' "
 		"%s" /* VTI_IP */
 		"PLUTO_MY_PORT='%u' "
-		"PLUTO_MY_PROTOCOL='%u' "
+		"PLUTO_MY_PROTOCOL='%u' "	/* 10 */
 		"PLUTO_SA_REQID='%u' "
 		"PLUTO_SA_TYPE='%s' "
 		"PLUTO_PEER='%s' "
 		"PLUTO_PEER_ID='%s' "
-		"PLUTO_PEER_CLIENT='%s' "
+		"PLUTO_PEER_CLIENT='%s' "	/* 15 */
 		"PLUTO_PEER_CLIENT_NET='%s' "
 		"PLUTO_PEER_CLIENT_MASK='%s' "
 		"PLUTO_PEER_PORT='%u' "
 		"PLUTO_PEER_PROTOCOL='%u' "
-		"PLUTO_PEER_CA='%s' "
+		"PLUTO_PEER_CA='%s' "		/* 20 */
 		"PLUTO_STACK='%s' "
 		"%s"		/* optional metric */
 		"%s"		/* optional mtu */
 		"PLUTO_ADDTIME='%" PRIu64 "' "
-		"PLUTO_CONN_POLICY='%s%s' "
+		"PLUTO_CONN_POLICY='%s%s' "	/* 25,26 */
 		"PLUTO_CONN_KIND='%s' "
 		"PLUTO_CONN_ADDRFAMILY='ipv%d' "
 		"XAUTH_FAILED=%d "
-		"%s"		/* XAUTH username - if any */
+		"%s"		/* XAUTH username - if any */	/* 30 */
 		"%s"		/* PLUTO_MY_SRCIP - if any */
 		"PLUTO_IS_PEER_CISCO='%u' "
 		"PLUTO_PEER_DNS_INFO='%s' "
 		"PLUTO_PEER_DOMAIN_INFO='%s' "
-		"PLUTO_PEER_BANNER='%s' "
+		"PLUTO_PEER_BANNER='%s' "	/* 35 */
+		"PLUTO_CFG_SERVER='%u' "
+		"PLUTO_CFG_CLIENT='%u' "
 #ifdef HAVE_NM
 		"PLUTO_NM_CONFIGURED='%u' "
 #endif
 		"%s" /* traffic in stats - if any */
-		"%s" /* traffic out stats - if any */
+		"%s" /* traffic out stats - if any */	/* 40 */
 		"%s" /* nflog-group - if any */
 		"%s" /* conn-mark - if any */
 		"VTI_IFACE='%s' "
 		"VTI_ROUTING='%s' "
 		"VTI_SHARED='%s' "
-		"%s" /* CAT=yes if set */
+		"%s" /* CAT=yes if set */	/* 45 */
 		"SPI_IN=0x%x SPI_OUT=0x%x " /* SPI_IN SPI_OUT */
 
 		, c->name,
@@ -635,26 +636,28 @@ int fmt_common_shell_out(char *buf, int blen, const struct connection *c,
 		connmtu_str,
 		st == NULL ? (u_int64_t)0 : st->st_esp.add_time,
 		prettypolicy(c->policy),	/* 25 */
-		NEVER_NEGOTIATE(c->policy) ? "+NEVER_NEGOTIATE" : "",
+		NEVER_NEGOTIATE(c->policy) ? "+NEVER_NEGOTIATE" : "",	/* 26 */
 		enum_show(&connection_kind_names, c->kind),
 		(c->addr_family == AF_INET) ? 4 : 6,
 		(st != NULL && st->st_xauth_soft) ? 1 : 0,
-		secure_xauth_username_str,
+		secure_xauth_username_str,	/* 30 */
 		srcip_str,
-		c->remotepeertype,
-		c->cisco_dns_info ? c->cisco_dns_info : "",
-		c->modecfg_domain ? c->modecfg_domain : "",
-		c->modecfg_banner ? c->modecfg_banner : "",
+		c->remotepeertype, /* kind of odd printing an enum with %u */
+		(st != NULL && st->st_seen_cfg_dns != NULL) ? st->st_seen_cfg_dns : "",
+		(st != NULL && st->st_seen_cfg_domains != NULL) ? st->st_seen_cfg_domains : "",
+		(st != NULL && st->st_seen_cfg_banner != NULL) ? st->st_seen_cfg_banner : "",	/* 35 */
+		sr->this.modecfg_server,
+		sr->this.modecfg_client,
 #ifdef HAVE_NM
 		c->nmconfigured,
 #endif
 		traffic_in_str,
-		traffic_out_str,
+		traffic_out_str,	/* 40 */
 		nflogstr,
 		connmarkstr,
 		c->vti_iface ? c->vti_iface : "",
-		c->vti_routing ? "yes" : "no",
-		c->vti_shared ? "yes" : "no",
+		bool_str(c->vti_routing),
+		bool_str(c->vti_shared),	/* 45 */
 		catstr,
 		st == NULL ? 0 : st->st_esp.present ? ntohl(st->st_esp.attrs.spi) :
 			st->st_ah.present ? ntohl(st->st_ah.attrs.spi) :
@@ -921,15 +924,6 @@ static enum routability could_route(struct connection *c)
 		return route_impossible;
 	}
 
-#if 0
-	/* if we don't know nexthop, we cannot route */
-	if (isanyaddr(&c->spd.this.host_nexthop)) {
-		loglog(RC_ROUTE,
-			"cannot route connection without knowing our nexthop");
-		return route_impossible;
-	}
-#endif
-
 	/* if routing would affect IKE messages, reject */
 	if (kern_interface != NO_KERNEL
 		&& c->spd.this.host_port != pluto_nat_port
@@ -1121,7 +1115,7 @@ void unroute_connection(struct connection *c)
 #include "alg_info.h"
 #include "kernel_alg.h"
 
-static void set_text_said(char *text_said, const ip_address *dst,
+void set_text_said(char *text_said, const ip_address *dst,
 			ipsec_spi_t spi, int sa_proto)
 {
 	ip_said said;
@@ -1167,9 +1161,9 @@ static void free_bare_shunt(struct bare_shunt **pp)
 	pfree(p);
 }
 
-int show_shunt_count(void)
+unsigned show_shunt_count(void)
 {
-	int i = 0;
+	unsigned i = 0;
 	const struct bare_shunt *bs;
 
 	for (bs = bare_shunts; bs != NULL; bs = bs->next)
@@ -1722,11 +1716,9 @@ static bool del_spi(ipsec_spi_t spi, int proto,
 static void setup_esp_nic_offload(struct kernel_sa *sa, struct connection *c,
 		bool *nic_offload_fallback)
 {
-	if (c->nic_offload == nic_offload_no)
-		return;
-
-	if (c->interface == NULL || c->interface->ip_dev == NULL ||
-		c->interface->ip_dev->id_rname == NULL)
+	if (c->nic_offload == nic_offload_no ||
+	    c->interface == NULL || c->interface->ip_dev == NULL ||
+	    c->interface->ip_dev->id_rname == NULL)
 		return;
 
 	if (c->nic_offload == nic_offload_auto) {
@@ -1757,7 +1749,6 @@ static bool setup_half_ipsec_sa(struct state *st, bool inbound)
 	bool incoming_ref_set = FALSE;
 	IPsecSAref_t refhim = st->st_refhim;
 	IPsecSAref_t new_refhim = IPSEC_SAREF_NULL;
-	bool ret;
 #ifdef USE_NIC_OFFLOAD
 	bool nic_offload_fallback = FALSE;
 #endif
@@ -1779,7 +1770,6 @@ static bool setup_half_ipsec_sa(struct state *st, bool inbound)
 	 */
 	int encapsulation = ENCAPSULATION_MODE_TRANSPORT;
 	int encap_oneshot;
-
 	bool add_selector;
 
 	src.maskbits = 0;
@@ -1787,13 +1777,13 @@ static bool setup_half_ipsec_sa(struct state *st, bool inbound)
 
 	if (inbound) {
 		src.addr = c->spd.that.host_addr;
-		dst.addr = c->spd.this.host_addr;
 		src_client = c->spd.that.client;
+		dst.addr = c->spd.this.host_addr;
 		dst_client = c->spd.this.client;
 	} else {
 		src.addr = c->spd.this.host_addr,
-		dst.addr = c->spd.that.host_addr;
 		src_client = c->spd.this.client;
+		dst.addr = c->spd.that.host_addr;
 		dst_client = c->spd.that.client;
 	}
 
@@ -2100,6 +2090,15 @@ static bool setup_half_ipsec_sa(struct state *st, bool inbound)
 			said_next->tfcpad = c->sa_tfcpad;
 		}
 
+		if (c->policy & POLICY_DECAP_DSCP) {
+			DBG(DBG_KERNEL, DBG_log("Enabling Decap ToS/DSCP bits"));
+			said_next->decap_dscp = TRUE;
+		}
+		if (c->policy & POLICY_NOPMTUDISC) {
+			DBG(DBG_KERNEL, DBG_log("Disabling Path MTU Discovery"));
+			said_next->nopmtudisc = TRUE;
+		}
+
 		said_next->integ = ta->ta_integ;
 		if (said_next->integ == &ike_alg_integ_sha2_256 &&
 			st->st_connection->sha2_truncbug) {
@@ -2127,8 +2126,8 @@ static bool setup_half_ipsec_sa(struct state *st, bool inbound)
 		}
 		said_next->authalg = said_next->integ->integ_ikev1_ah_transform;
 
-		if (st->st_esp.attrs.transattrs.esn_enabled == TRUE) {
-			DBG(DBG_KERNEL, DBG_log("Enabling ESN "));
+		if (st->st_esp.attrs.transattrs.esn_enabled) {
+			DBG(DBG_KERNEL, DBG_log("Enabling ESN"));
 			said_next->esn = TRUE;
 		}
 
@@ -2163,16 +2162,15 @@ static bool setup_half_ipsec_sa(struct state *st, bool inbound)
 			useful_mastno != -1)
 			said_next->outif = MASTTRANSPORT_OFFSET +
 				useful_mastno;
-
 #endif
 		said_next->text_said = text_esp;
 
 		DBG(DBG_PRIVATE, {
-				DBG_dump("ESP enckey:",  said_next->enckey,
-					said_next->enckeylen);
-				DBG_dump("ESP authkey:", said_next->authkey,
-					said_next->authkeylen);
-			});
+			DBG_dump("ESP enckey:",  said_next->enckey,
+				said_next->enckeylen);
+			DBG_dump("ESP authkey:", said_next->authkey,
+				said_next->authkeylen);
+		});
 
 		if (inbound) {
 			/*
@@ -2189,7 +2187,7 @@ static bool setup_half_ipsec_sa(struct state *st, bool inbound)
 		setup_esp_nic_offload(said_next, c, &nic_offload_fallback);
 #endif
 
-		ret = kernel_ops->add_sa(said_next, replace);
+		bool ret = kernel_ops->add_sa(said_next, replace);
 
 #ifdef USE_NIC_OFFLOAD
 		if (!ret && nic_offload_fallback &&
@@ -2199,15 +2197,12 @@ static bool setup_half_ipsec_sa(struct state *st, bool inbound)
 			ret = kernel_ops->add_sa(said_next, replace);
 		}
 #endif
-		if (!ret) {
-			/* scrub keys from memory */
-			memset(said_next->enckey, 0, said_next->enckeylen);
-			memset(said_next->authkey, 0, said_next->authkeylen);
-			goto fail;
-		}
 		/* scrub keys from memory */
 		memset(said_next->enckey, 0, said_next->enckeylen);
 		memset(said_next->authkey, 0, said_next->authkeylen);
+
+		if (!ret)
+			goto fail;
 
 		/*
 		 * SA refs will have been allocated for this SA.
@@ -2263,8 +2258,8 @@ static bool setup_half_ipsec_sa(struct state *st, bool inbound)
 		DBG(DBG_KERNEL, DBG_log("setting IPsec SA replay-window to %d",
 			c->sa_replay_window));
 
-		if (st->st_ah.attrs.transattrs.esn_enabled == TRUE) {
-			DBG(DBG_KERNEL, DBG_log("Enabling ESN "));
+		if (st->st_ah.attrs.transattrs.esn_enabled) {
+			DBG(DBG_KERNEL, DBG_log("Enabling ESN"));
 			said_next->esn = TRUE;
 		}
 
@@ -2282,7 +2277,7 @@ static bool setup_half_ipsec_sa(struct state *st, bool inbound)
 		} else if (!outgoing_ref_set) {
 			/* on outbound, pick up the SAref if not already done */
 			said_next->ref = refhim;
-			outgoing_ref_set = TRUE;	/* not currently used */
+			outgoing_ref_set = TRUE;	/* outgoing_ref_set not subsequently used */
 		}
 
 		if (!kernel_ops->add_sa(said_next, replace)) {
@@ -2305,11 +2300,11 @@ static bool setup_half_ipsec_sa(struct state *st, bool inbound)
 		}
 		if (!incoming_ref_set && inbound) {
 			st->st_ref = said_next->ref;
-			incoming_ref_set = TRUE;	/* not currently used */
+			incoming_ref_set = TRUE;	/* incoming_ref_set not subsequently used */
 		}
 		said_next++;
 
-		encap_oneshot = ENCAPSULATION_MODE_TRANSPORT;	/* not currently used */
+		encap_oneshot = ENCAPSULATION_MODE_TRANSPORT;	/* encap_oneshot not subsequently used */
 	}
 
 	/*
@@ -2430,7 +2425,7 @@ static bool setup_half_ipsec_sa(struct state *st, bool inbound)
 		st->st_refhim = new_refhim;
 
 	/* if the impaired is set, pretend this fails */
-	if (st->st_connection->extra_debugging & IMPAIR_SA_CREATION) {
+	if (lmod_is_set(st->st_connection->extra_impairing, IMPAIR_SA_CREATION)) {
 		DBG_log("Impair SA creation is set, pretending to fail");
 		goto fail;
 	}
@@ -2551,14 +2546,14 @@ static bool teardown_half_ipsec_sa(struct state *st, bool inbound)
 
 static event_callback_routine kernel_process_msg_cb;
 
-static void kernel_process_msg_cb(evutil_socket_t fd UNUSED,
+static void kernel_process_msg_cb(evutil_socket_t fd,
 		const short event UNUSED, void *arg)
 {
 	const struct kernel_ops *kernel_ops = arg;
 
 	DBG(DBG_KERNEL, DBG_log(" %s process netlink message", __func__));
-	kernel_ops->process_msg();
-	passert(GLOBALS_ARE_RESET());
+	kernel_ops->process_msg(fd);
+	pexpect_reset_globals();
 }
 
 static event_callback_routine kernel_process_queue_cb;
@@ -2569,7 +2564,7 @@ static void kernel_process_queue_cb(evutil_socket_t fd UNUSED,
 	const struct kernel_ops *kernel_ops = arg;
 
 	kernel_ops->process_queue();
-	passert(GLOBALS_ARE_RESET());
+	pexpect_reset_globals();
 
 }
 
@@ -2577,7 +2572,7 @@ static void kernel_process_queue_cb(evutil_socket_t fd UNUSED,
 static char kversion[256];
 
 const struct kernel_ops *kernel_ops = NULL;
-int bare_shunt_interval = SHUNT_SCAN_INTERVAL;
+deltatime_t bare_shunt_interval = DELTATIME(SHUNT_SCAN_INTERVAL);
 
 
 void init_kernel(void)
@@ -2677,14 +2672,20 @@ void init_kernel(void)
 	if (kernel_ops->pfkey_register != NULL)
 		kernel_ops->pfkey_register();
 
-	event_schedule(EVENT_SHUNT_SCAN, SHUNT_SCAN_INTERVAL, NULL);
+	event_schedule_s(EVENT_SHUNT_SCAN, SHUNT_SCAN_INTERVAL, NULL);
 
 	DBG(DBG_KERNEL, DBG_log("setup kernel fd callback"));
 
 	/* Note: kernel_ops is const but pluto_event_add cannot know that */
 	pluto_event_add(*kernel_ops->async_fdp, EV_READ | EV_PERSIST,
 			kernel_process_msg_cb, (void *)kernel_ops, NULL,
-			"KERNEL_FD");
+			"KERNEL_XRM_FD");
+
+	if (kernel_ops->route_fdp != NULL && *kernel_ops->route_fdp  > NULL_FD) {
+		pluto_event_add(*kernel_ops->route_fdp, EV_READ | EV_PERSIST,
+				kernel_process_msg_cb, (void *)kernel_ops, NULL,
+				"KERNEL_ROUTE_FD");
+	}
 
 	if (kernel_ops->process_queue != NULL) {
 		/*
@@ -2693,7 +2694,7 @@ void init_kernel(void)
 		 * call process_queue periodically.  Does the order
 		 * matter?
 		 */
-		static const struct timeval delay = {KERNEL_PROCESS_Q_PERIOD, 0};
+		static const deltatime_t delay = DELTATIME(KERNEL_PROCESS_Q_PERIOD);
 
 		/* Note: kernel_ops is read-only but pluto_event_add cannot know that */
 		pluto_event_add(NULL_FD, EV_TIMEOUT | EV_PERSIST,
@@ -2770,11 +2771,6 @@ bool install_inbound_ipsec_sa(struct state *st)
 					&c->spd.that.host_addr) &&
 				o->interface == c->interface)
 				break;  /* existing route is compatible */
-
-#if 0                                   /* this stops us removing certain RW routes, and later we fail */
-			if (o->kind == CK_TEMPLATE && streq(o->name, c->name))
-				break;  /* ??? is this good enough?? */
-#endif
 
 			if (kernel_ops->overlap_supported) {
 				/*
@@ -2881,21 +2877,7 @@ bool route_and_eroute(struct connection *c,
 			rosr,
 			st == NULL ? 0 : st->st_serialno));
 
-	/* look along the chain of policies for one with the same name */
-
-#if 0
-	/* XXX - mcr this made sense before, and likely will make sense
-	 * again, so I'l leaving this to remind me what is up
-	 */
-	if (ero != NULL && ero->routing == RT_UNROUTED_KEYED)
-		ero = NULL;
-
-	for (ero2 = ero; ero2 != NULL; ero2 = ero->policy_next)
-		if ((ero2->kind == CK_TEMPLATE ||
-				ero2->kind == CK_SECONDARY) &&
-			streq(ero2->name, c->name))
-			break;
-#endif
+	/* look along the chain of policies for same one */
 
 	struct bare_shunt **bspp = (ero == NULL) ?
 		bare_shunt_ptr(&sr->this.client, &sr->that.client,
@@ -2920,22 +2902,7 @@ bool route_and_eroute(struct connection *c,
 						"replace");
 		}
 
-#if 0
-		/* XXX - MCR. I previously felt that this was a bogus check */
-		if (ero != NULL && ero != c && esr != sr) {
-			/* By elimination, we must be eclipsing ero.  Check. */
-			passert(ero->kind == CK_TEMPLATE &&
-				streq(ero->name, c->name));
-			passert(LHAS(LELEM(RT_ROUTED_PROSPECTIVE) |
-					LELEM(RT_ROUTED_ECLIPSED),
-					esr->routing));
-			passert(samesubnet(&esr->this.client,
-						&sr->this.client) &&
-				samesubnet(&esr->that.client,
-					&sr->that.client));
-		}
-#endif
-		/* remember to free bspp iff we make it out of here alive */
+		/* remember to free bspp if we make it out of here alive */
 	} else {
 		/* we're adding an eroute */
 #ifdef IPSEC_CONNECTION_LIMIT
@@ -3226,8 +3193,9 @@ bool install_ipsec_sa(struct state *st, bool inbound_also)
 
 	/* setup outgoing SA if we haven't already */
 	if (!st->st_outbound_done) {
-		if (!setup_half_ipsec_sa(st, FALSE))
+		if (!setup_half_ipsec_sa(st, FALSE)) {
 			return FALSE;
+		}
 
 		DBG(DBG_KERNEL,
 			DBG_log("set up outgoing SA, ref=%u/%u", st->st_ref,
@@ -3296,6 +3264,32 @@ bool install_ipsec_sa(struct state *st, bool inbound_also)
 #endif
 
 	return TRUE;
+}
+
+bool migrate_ipsec_sa(struct state *st)
+{
+	switch (kern_interface) {
+	case USE_NETKEY:
+		/* support ah? if(!st->st_esp.present && !st->st_ah.present)) */
+		if (!st->st_esp.present) {
+			libreswan_log("mobike SA migration only support ESP SA");
+			return FALSE;
+		}
+
+		if (!kernel_ops->migrate_sa(st))
+			return FALSE;
+
+		return TRUE;
+
+	case NO_KERNEL:
+		DBG(DBG_CONTROL, DBG_log("No support required to migrate_ipsec_sa with NoKernel support"));
+		return TRUE;
+
+	default:
+		DBG(DBG_CONTROL,
+			DBG_log("Usupported kernel stack in migrate_ipsec_sa"));
+		return FALSE;
+	}
 }
 
 /* delete an IPSEC SA.
@@ -3488,14 +3482,15 @@ bool get_sa_info(struct state *st, bool inbound, deltatime_t *ago /* OUTPUT */)
 	sa.text_said = text_said;
 
 	DBG(DBG_KERNEL,
-		DBG_log("get %s", text_said));
+		DBG_log("get_sa_info %s", text_said));
 	if (!kernel_ops->get_sa(&sa, &bytes, &add_time))
 		return FALSE;
 
 	p2->add_time = add_time;
 
-	passert(p2->our_lastused.mono_secs != 0);
-	passert(p2->peer_lastused.mono_secs != 0);
+	/* fied has been set? */
+	passert(!is_monotime_epoch(p2->our_lastused));
+	passert(!is_monotime_epoch(p2->peer_lastused));
 
 	if (inbound) {
 		if (bytes > p2->our_bytes) {

@@ -13,7 +13,7 @@ east #
 000 "westnet-eastnet-ikev2":     oriented; my_ip=unset; their_ip=unset; my_updown=ipsec _updown;
 000 "westnet-eastnet-ikev2":   xauth us:none, xauth them:none,  my_username=[any]; their_username=[any]
 000 "westnet-eastnet-ikev2":   our auth:secret, their auth:secret
-000 "westnet-eastnet-ikev2":   modecfg info: us:none, them:none, modecfg policy:push, dns1:unset, dns2:unset, domain:unset, banner:unset, cat:unset;
+000 "westnet-eastnet-ikev2":   modecfg info: us:none, them:none, modecfg policy:push, dns:unset, domains:unset, banner:unset, cat:unset;
 000 "westnet-eastnet-ikev2":   labeled_ipsec:no;
 000 "westnet-eastnet-ikev2":   policy_label:unset;
 000 "westnet-eastnet-ikev2":   ike_life: 3600s; ipsec_life: 28800s; replay_window: 32; rekey_margin: 540s; rekey_fuzz: 100%; keyingtries: 0;
@@ -31,8 +31,7 @@ east #
 000 "westnet-eastnet-ikev2":   ESP algorithm newest: AES_CBC_256-HMAC_SHA2_512_256; pfsgroup=MODP2048
 000 #2: "westnet-eastnet-ikev2":500 STATE_V2_IPSEC_I (IPsec SA established); EVENT_SA_REPLACE in  XXs; newest IPSEC; eroute owner; isakmp#4; idle; import:admin initiate
 000 #2: "westnet-eastnet-ikev2" esp.ESPSPIi@192.1.2.45 esp.ESPSPIi@192.1.2.23 tun.0@192.1.2.45 tun.0@192.1.2.23 ref=0 refhim=0 Traffic: ESPin=1008B ESPout=1008B! ESPmax=0B 
-000 #4: "westnet-eastnet-ikev2":500 STATE_PARENT_R2 (received v2I2, PARENT SA established); EVENT_SA_REPLACE in  XXs; newest ISAKMP; isakmp#0; idle; import:admin initiate
-000 #4: "westnet-eastnet-ikev2" ref=0 refhim=0 Traffic: 
+000 #4: "westnet-eastnet-ikev2":500 STATE_PARENT_R2 (received v2I2, PARENT SA established); EVENT_SA_REPLACE in  XXs; newest ISAKMP; idle; import:admin initiate
 east #
  if [ -f /var/run/charon.pid ]; then strongswan status ; fi
 east #

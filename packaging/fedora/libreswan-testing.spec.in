@@ -4,14 +4,30 @@
 %global with_development 1
 %global with_cavstests 0
 %global _exec_prefix %{_prefix}/local
+# Libreswan config options
+%global libreswan_config \\\
+    FINALDOCDIR=%{_pkgdocdir} \\\
+    FINALEXAMPLECONFDIR=%{_pkgdocdir} \\\
+    FINALLIBEXECDIR=%{_libexecdir}/ipsec \\\
+    FINALMANDIR=%{_mandir} \\\
+    FINALRUNDIR=%{_rundir}/pluto \\\
+    FIPSPRODUCTCHECK=%{_sysconfdir}/system-fips \\\
+    INC_RCDEFAULT=%{_initrddir} \\\
+    INC_USRLOCAL=%{_exec_prefix} \\\
+    IPSECVERSION=%{IPSECVERSION} \\\
+%{nil}
 
 #global prever rc1
+
+%global rel %{?prever:0.}1%{?prever:.%{prever}}
+# for pluto --version
+%global IPSECVERSION %{version}-%{rel}
 
 Name: libreswan
 Summary: IPsec implementation with IKEv1 and IKEv2 keying protocols
 # version is replaced in make target
 Version: @IPSECBASEVERSION@
-Release: %{?prever:0.}1%{?prever:.%{prever}}%{?dist}
+Release: %{rel}%{?dist}
 License: GPLv2
 Url: https://libreswan.org/
 Source0: https://download.libreswan.org/%{?prever:development/}%{name}-%{version}%{?prever}.tar.gz
@@ -84,20 +100,9 @@ sed -i "s:/usr/bin/python:/usr/bin/python3:" programs/verify/verify.in
 %global efence "-lefence"
 %endif
 
-# for pluto --version
-%global IPSECSVERSION %{version}-%{?prever:0.}1%{?prever:.%{prever}}
-
 #796683: -fno-strict-aliasing
 make %{?_smp_mflags} \
-    FINALDOCDIR=%{_pkgdocdir} \
-    FINALEXAMPLECONFDIR=%{_pkgdocdir} \
-    FINALLIBEXECDIR=%{_libexecdir}/ipsec \
-    FINALRUNDIR=%{_rundir}/pluto \
-    FIPSPRODUCTCHECK=%{_sysconfdir}/system-fips \
-    INC_RCDEFAULT=%{_initrddir} \
-    INC_USRLOCAL=%{_exec_prefix} \
-    IPSECSVERSION=%{IPSECSVERSION} \
-    MANTREE=%{_mandir} \
+    %{libreswan_config} \
     programs
 FS=$(pwd)
 
@@ -112,16 +117,7 @@ FS=$(pwd)
 %install
 make \
     DESTDIR=%{buildroot} \
-    FINALEXAMPLECONFDIR=%{_pkgdocdir} \
-    FINALLIBEXECDIR=%{_libexecdir}/ipsec \
-    FINALDOCDIR=%{_pkgdocdir} \
-    FINALRUNDIR=%{_rundir}/pluto \
-    FIPSPRODUCTCHECK=%{_sysconfdir}/system-fips \
-    INC_RCDEFAULT=%{_initrddir} \
-    INC_USRLOCAL=%{_exec_prefix} \
-    INITSYSTEM=systemd \
-    IPSECSVERSION=%{IPSECSVERSION} \
-    MANTREE=%{buildroot}%{_mandir} \
+    %{libreswan_config} \
     install
 FS=$(pwd)
 # Work around for FINALEXAMPLECONFDIR not working properly

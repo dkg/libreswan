@@ -112,9 +112,10 @@ SBINDIR?=$(DESTDIR)$(FINALSBINDIR)
 
 # where the appropriate manpage tree is located
 # location within INC_USRLOCAL
-INC_MANDIR?=man
+INC_MANDIR?=share/man
+FINALMANDIR=$(INC_USRLOCAL)/$(INC_MANDIR)
 # the full pathname
-MANTREE?=$(DESTDIR)$(INC_USRLOCAL)/$(INC_MANDIR)
+MANTREE?=$(DESTDIR)$(FINALMANDIR)
 
 # where configuration files go
 FINALSYSCONFDIR?=/etc
@@ -141,6 +142,10 @@ FINALNSSDIR?=/etc/ipsec.d
 # Debian uses /var/lib/ipsec
 #FINALNSSDIR?=/var/lib/ipsec
 NSSDIR?=$(DESTDIR)$(FINALNSSDIR)
+
+# where dynamic PPKs go, for now
+FINALPPKDIR?=$(FINALCONFDDIR)
+PPKDIR?=$(DESTDIR)$(FINALPPKDIR)
 
 # sample configuration files go into
 INC_DOCDIR?=share/doc
@@ -327,7 +332,7 @@ POD2MAN?=$(shell which pod2man | grep / | head -n1)
 # HAVE_ variables let you tell Libreswan what system related libraries
 #       you may or maynot have
 
-# Enable support for DNSSEC. This requires the unbound library
+# Enable support for DNSSEC. This requires the unbound and ldns libraries.
 USE_DNSSEC?=true
 
 # For systemd start/stop notifications and watchdog feature
@@ -547,6 +552,7 @@ TRANSFORM_VARIABLES = sed -e "s:@IPSECVERSION@:$(IPSECVERSION):g" \
 			-e "s:@IPSEC_CONFDDIR@:$(FINALCONFDDIR):g" \
 			-e "s:@IPSEC_RUNDIR@:$(FINALRUNDIR):g" \
 			-e "s:@IPSEC_NSSDIR@:$(FINALNSSDIR):g" \
+			-e "s:@IPSEC_PPKDIR@:$(FINALPPKDIR):g" \
 			-e "s:@IPSEC_DIR@:$(FINALBINDIR):g" \
 			-e "s:@IPSEC_EXECDIR@:$(FINALLIBEXECDIR):g" \
 			-e "s:@IPSEC_VARDIR@:$(FINALVARDIR):g" \

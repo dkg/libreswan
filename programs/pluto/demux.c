@@ -66,6 +66,7 @@
 #include "timer.h"
 #include "udpfromto.h"
 
+#include "ip_address.h"
 #include "pluto_stats.h"
 
 /* This file does basic header checking and demux of
@@ -75,10 +76,11 @@
 void init_demux(void)
 {
 	init_ikev1();
+	init_ikev2();
 }
 
 /* forward declarations */
-static bool read_packet(struct msg_digest *md);
+static struct msg_digest *read_packet(const struct iface_port *ifp);
 
 /* Reply messages are built in this buffer.
  * Only one state transition function can be using it at a time
@@ -194,6 +196,143 @@ void comm_handle_cb(evutil_socket_t fd UNUSED, const short event UNUSED, void *a
 }
 
 
+/*
+ * Impair pluto by replaying packets.
+ *
+ * To make things easier, all packets received are saved, in-order, in
+ * a list and then various impair operations iterate over this list.
+ *
+ * For instance, IKEv1 sends back-to-back packets (see XAUTH).  By
+ * replaying them (and everything else) this can simulate what happens
+ * when the remote starts re-transmitting them.
+ */
+
+static struct msg_digest *dup_md(struct msg_digest *orig)
+{
+	struct msg_digest *dup = alloc_md("dup");
+	/* raw_packet */
+	dup->iface = orig->iface;
+	dup->sender = orig->sender;
+	/* packet_pbs ... */
+	size_t packet_size = pbs_room(&orig->packet_pbs);
+	void *packet_bytes = clone_bytes(orig->packet_pbs.start, packet_size, "dup packet");
+	init_pbs(&dup->packet_pbs, packet_bytes, packet_size, "dup pbs");
+	/* message_pbs */
+	/* clr_pbs */
+	/* hdr */
+	/* encrypted */
+	/* from_state */
+	/* smc */
+	/* svm */
+	/* new_iv_set */
+	/* st */
+	/* original_role */
+	/* msgid_received */
+	/* rbody */
+	/* note */
+	/* dpd */
+	/* ikev2 */
+	/* fragvid */
+	/* nortel */
+	/* event_already_set */
+	/* digest */
+	/* digest_roof */
+	/* chain */
+	/* quirks */
+	return dup;
+}
+
+static void process_dup(struct msg_digest *orig)
+{
+	/* not whack FD yet is expected to be reset! */
+	pexpect_reset_globals();
+
+	struct msg_digest *md = dup_md(orig);
+	ip_address old_from = push_cur_from(md->sender);
+	process_packet(&md);
+	pop_cur_from(old_from);
+	release_any_md(&md);
+
+	/* not whack FD */
+	reset_cur_state();
+	reset_cur_connection();
+	pexpect_reset_globals();
+}
+
+static unsigned long replay_count;
+
+struct replay_entry {
+	struct list_entry entry;
+	struct msg_digest *md;
+	unsigned long nr;
+};
+
+static size_t log_replay_entry(struct lswlog *buf, void *data)
+{
+	struct replay_entry *r = (struct replay_entry*)data;
+	return lswlogf(buf, "replay packet %lu", r == NULL ? 0L : r->nr);
+}
+
+static struct list_head replay_packets;
+
+static struct list_info replay_info = {
+	.debug = DBG_CONTROLMORE,
+	.name = "replay list",
+	.log = log_replay_entry,
+};
+
+static struct replay_entry *replay_entry(struct msg_digest *md)
+{
+	struct replay_entry *e = alloc_thing(struct replay_entry, "replay");
+	e->md = dup_md(md);
+	e->nr = ++replay_count; /* yes; pre-increment */
+	e->entry = list_entry(&replay_info, e); /* back-link */
+	return e;
+}
+
+static bool incoming_impaired(void)
+{
+	return (DBGP(IMPAIR_REPLAY_DUPLICATES) ||
+		DBGP(IMPAIR_REPLAY_FORWARD) ||
+		DBGP(IMPAIR_REPLAY_BACKWARD));
+}
+
+static void impair_incoming(struct msg_digest *md)
+{
+	/* save this packet */
+	init_list(&replay_info, &replay_packets);
+	struct replay_entry *e = replay_entry(md);
+	insert_list_entry(&replay_packets, &e->entry);
+	/* now behave per enabled impair */
+	if (IMPAIR(REPLAY_DUPLICATES)) {
+		/* MD is the most recent entry */
+		process_dup(md);
+		libreswan_log("IMPAIR: start duplicate packet");
+		process_dup(e->md);
+		libreswan_log("IMPAIR: stop duplicate packet");
+	}
+	if (IMPAIR(REPLAY_FORWARD)) {
+		struct replay_entry *e = NULL;
+		FOR_EACH_LIST_ENTRY_OLD2NEW(&replay_packets, e) {
+			libreswan_log("IMPAIR: start replay forward: packet %lu of %lu",
+				      e->nr, replay_count);
+			process_dup(e->md);
+			libreswan_log("IMPAIR: stop replay forward: packet %lu of %lu",
+				      e->nr, replay_count);
+		}
+	}
+	if (IMPAIR(REPLAY_BACKWARD)) {
+		struct replay_entry *e = NULL;
+		FOR_EACH_LIST_ENTRY_NEW2OLD(&replay_packets, e) {
+			libreswan_log("IMPAIR: start replay backward: packet %lu of %lu",
+				      e->nr, replay_count);
+			process_dup(e->md);
+			libreswan_log("IMPAIR: stop replay backward: packet %lu of %lu",
+				      e->nr, replay_count);
+		}
+	}
+}
+
 /* wrapper for read_packet and process_packet
  *
  * The main purpose of this wrapper is to factor out teardown code
@@ -209,8 +348,6 @@ void comm_handle_cb(evutil_socket_t fd UNUSED, const short event UNUSED, void *a
  */
 static void comm_handle(const struct iface_port *ifp)
 {
-	struct msg_digest *md;
-
 #if defined(IP_RECVERR) && defined(MSG_ERRQUEUE)
 	/* Even though select(2) says that there is a message,
 	 * it might only be a MSG_ERRQUEUE message.  At least
@@ -227,18 +364,22 @@ static void comm_handle(const struct iface_port *ifp)
 
 #endif /* defined(IP_RECVERR) && defined(MSG_ERRQUEUE) */
 
-	md = alloc_md("msg_digest in comm_handle");
-	md->iface = ifp;
 
-	if (read_packet(md))
-		process_packet(&md);
+	struct msg_digest *md = read_packet(ifp);
+	if (md != NULL) {
+		if (incoming_impaired()) {
+			impair_incoming(md);
+		} else {
+			ip_address old_from = push_cur_from(md->sender);
+			process_packet(&md);
+			pop_cur_from(old_from);
+		}
+		release_any_md(&md);
+	}
 
-	release_any_md(&md);
-
-	cur_state = NULL;
+	reset_cur_state();
 	reset_cur_connection();
-	cur_from = NULL;
-	passert(GLOBALS_ARE_RESET());
+	pexpect_reset_globals();
 }
 
 /* read the message.
@@ -246,9 +387,8 @@ static void comm_handle(const struct iface_port *ifp)
  * an overly large buffer and then copy it to a
  * new, properly sized buffer.
  */
-static bool read_packet(struct msg_digest *md)
+static struct msg_digest *read_packet(const struct iface_port *ifp)
 {
-	const struct iface_port *ifp = md->iface;
 	int packet_len;
 	/* ??? this buffer seems *way* too big */
 	u_int8_t bigbuffer[MAX_INPUT_UDP_SIZE];
@@ -270,7 +410,8 @@ static bool read_packet(struct msg_digest *md)
 	err_t from_ugh = NULL;
 	static const char undisclosed[] = "unknown source";
 
-	happy(anyaddr(addrtypeof(&ifp->ip_addr), &md->sender));
+	ip_address sender;
+	happy(anyaddr(addrtypeof(&ifp->ip_addr), &sender));
 	zero(&from.sa);
 
 #if defined(HAVE_UDPFROMTO)
@@ -311,18 +452,16 @@ static bool read_packet(struct msg_digest *md)
 				from_ugh = initaddr(
 					(void *) &from.sa_in4.sin_addr,
 					sizeof(from.sa_in4.sin_addr),
-					AF_INET, &md->sender);
-				setportof(from.sa_in4.sin_port, &md->sender);
-				md->sender_port = ntohs(from.sa_in4.sin_port);
+					AF_INET, &sender);
+				setportof(from.sa_in4.sin_port, &sender);
 				break;
 			case AF_INET6:
 				from_ugh = initaddr(
 					(void *) &from.sa_in6.sin6_addr,
 					sizeof(from.sa_in6.
 					       sin6_addr),
-					AF_INET6, &md->sender);
-				setportof(from.sa_in6.sin6_port, &md->sender);
-				md->sender_port = ntohs(from.sa_in6.sin6_port);
+					AF_INET6, &sender);
+				setportof(from.sa_in6.sin6_port, &sender);
 				break;
 			}
 		}
@@ -339,72 +478,51 @@ static bool read_packet(struct msg_digest *md)
 			libreswan_log(
 				"some IKE message we sent has been rejected with ECONNREFUSED (kernel supplied no details)");
 		} else if (from_ugh != NULL) {
-			LOG_ERRNO(errno,
-				  "recvfrom on %s failed; Pluto cannot decode source sockaddr in rejection: %s",
-				  ifp->ip_dev->id_rname, from_ugh);
+			LSWLOG_ERRNO(errno, buf) {
+				lswlogf(buf, "recvfrom on %s failed; Pluto cannot decode source sockaddr in rejection: %s",
+					ifp->ip_dev->id_rname, from_ugh);
+			}
 		} else {
-			ipstr_buf b;
-			LOG_ERRNO(errno, "recvfrom on %s from %s:%u failed",
-				  ifp->ip_dev->id_rname,
-				  ipstr(&md->sender, &b),
-				  (unsigned)md->sender_port);
+			LSWLOG_ERRNO(errno, buf) {
+				lswlogf(buf, "recvfrom on %s from ",
+					ifp->ip_dev->id_rname);
+				lswlog_ip(buf, &sender);
+				lswlogs(buf, " failed");
+			}
 		}
 
-		return FALSE;
+		return NULL;
 	} else if (from_ugh != NULL) {
 		libreswan_log(
 			"recvfrom on %s returned malformed source sockaddr: %s",
 			ifp->ip_dev->id_rname, from_ugh);
-		return FALSE;
+		return NULL;
 	}
-	cur_from = &md->sender;
-	cur_from_port = md->sender_port;
 
 	if (ifp->ike_float) {
 		u_int32_t non_esp;
 
 		if (packet_len < (int)sizeof(u_int32_t)) {
-			ipstr_buf b;
-
-			libreswan_log("recvfrom %s:%u too small packet (%d)",
-				      ipstr(cur_from, &b), (unsigned) cur_from_port,
-				      packet_len);
-			return FALSE;
+			LSWLOG(buf) {
+				lswlogs(buf, "recvfrom ");
+				lswlog_ip(buf, &sender); /* sensitive? */
+				lswlogf(buf, " too small packet (%d)",
+					packet_len);
+			}
+			return NULL;
 		}
 		memcpy(&non_esp, _buffer, sizeof(u_int32_t));
 		if (non_esp != 0) {
-			ipstr_buf b;
-
-			libreswan_log("recvfrom %s:%u has no Non-ESP marker",
-				      ipstr(cur_from, &b),
-				      (unsigned) cur_from_port);
-			return FALSE;
+			LSWLOG(buf) {
+				lswlogs(buf, "recvfrom ");
+				lswlog_ip(buf, &sender);
+				lswlogs(buf, " has no Non-ESP marker");
+			}
+			return NULL;
 		}
 		_buffer += sizeof(u_int32_t);
 		packet_len -= sizeof(u_int32_t);
 	}
-
-	/* Clone actual message contents
-	 * and set up md->packet_pbs to describe it.
-	 */
-	init_pbs(&md->packet_pbs
-		 , clone_bytes(_buffer, packet_len,
-			       "message buffer in read_packet()")
-		 , packet_len, "packet");
-
-	DBG(DBG_RAW | DBG_CRYPT | DBG_PARSING | DBG_CONTROL, {
-		ipstr_buf b;
-		DBG_log("*received %d bytes from %s:%u on %s (port=%d)",
-			(int) pbs_room(&md->packet_pbs),
-			ipstr(cur_from, &b), (unsigned) cur_from_port,
-			ifp->ip_dev->id_rname,
-			ifp->port);
-	});
-
-	DBG(DBG_RAW,
-	    DBG_dump("", md->packet_pbs.start, pbs_room(&md->packet_pbs)));
-
-	pstats_ike_in_bytes += pbs_room(&md->packet_pbs);
 
 	/* We think that in 2013 Feb, Apple iOS Racoon
 	 * sometimes generates an extra useless buggy confusing
@@ -413,30 +531,86 @@ static bool read_packet(struct msg_digest *md)
 	{
 		static const u_int8_t non_ESP_marker[NON_ESP_MARKER_SIZE] =
 			{ 0x00, };
-
-		if (md->iface->ike_float &&
-		    pbs_left(&md->packet_pbs) >= NON_ESP_MARKER_SIZE &&
-		    memeq(md->packet_pbs.cur, non_ESP_marker,
+		if (ifp->ike_float &&
+		    packet_len >= NON_ESP_MARKER_SIZE &&
+		    memeq(_buffer, non_ESP_marker,
 			   NON_ESP_MARKER_SIZE)) {
-				libreswan_log("Mangled packet with potential spurious non-esp marker ignored");
-				return FALSE;
+			LSWLOG(buf) {
+				lswlogs(buf, "Mangled packet with potential spurious non-esp marker ignored. Sender: ");
+				lswlog_ip(buf, &sender); /* sensitiv? */
+			}
+			return NULL;
 		}
 	}
 
-	if ((pbs_room(&md->packet_pbs) == 1) &&
-	    (md->packet_pbs.start[0] == 0xff)) {
+	if (packet_len == 1 && _buffer[0] == 0xff) {
 		/**
 		 * NAT-T Keep-alive packets should be discared by kernel ESPinUDP
 		 * layer. But boggus keep-alive packets (sent with a non-esp marker)
 		 * can reach this point. Complain and discard them.
 		 */
-		DBG(DBG_NATT, {
-			ipstr_buf b;
-			DBG_log("NAT-T keep-alive (boggus ?) should not reach this point. Ignored. Sender: %s:%u", ipstr(cur_from, &b),
-				(unsigned) cur_from_port);
-		});
-		return FALSE;
+		LSWDBGP(DBG_NATT, buf) {
+			lswlogs(buf, "NAT-T keep-alive (boggus ?) should not reach this point. Ignored. Sender: ");
+			lswlog_ip(buf, &sender);
+		};
+		return NULL;
 	}
 
-	return TRUE;
+
+	/*
+	 * Clone actual message contents and set up md->packet_pbs to
+	 * describe it.
+	 */
+	struct msg_digest *md = alloc_md("msg_digest in read_packet");
+	md->iface = ifp;
+	md->sender = sender;
+
+	init_pbs(&md->packet_pbs
+		 , clone_bytes(_buffer, packet_len,
+			       "message buffer in read_packet()")
+		 , packet_len, "packet");
+
+	LSWDBGP(DBG_RAW | DBG_CRYPT | DBG_PARSING | DBG_CONTROL, buf) {
+		lswlogf(buf, "*received %d bytes from ",
+			(int) pbs_room(&md->packet_pbs));
+		lswlog_ip(buf, &sender);
+		lswlogf(buf, " on %s (port=%d)",
+			ifp->ip_dev->id_rname, ifp->port);
+	};
+
+	DBG(DBG_RAW,
+	    DBG_dump("", md->packet_pbs.start, pbs_room(&md->packet_pbs)));
+
+	pstats_ike_in_bytes += pbs_room(&md->packet_pbs);
+
+	return md;
+}
+
+/* Auxiliary function for modecfg_inR1() */
+char *cisco_stringify(pb_stream *pbs, const char *attr_name)
+{
+	char strbuf[500]; /* Cisco maximum unknown - arbitrary choice */
+	size_t len = pbs_left(pbs);
+
+	if (len > sizeof(strbuf) - 1)
+		len = sizeof(strbuf) - 1;
+
+	memcpy(strbuf, pbs->cur, len);
+	strbuf[len] = '\0';
+	/* ' is poison to the way this string will be used
+	 * in system() and hence shell.  Remove any.
+	 */
+	{
+		char *s = strbuf;
+
+		for (;; ) {
+			s = strchr(s, '\'');
+			if (s == NULL)
+				break;
+			*s = '?';
+		}
+	}
+	sanitize_string(strbuf, sizeof(strbuf));
+	loglog(RC_INFORMATIONAL, "Received %s: %s", attr_name, strbuf);
+	return clone_str(strbuf, attr_name);
 }
