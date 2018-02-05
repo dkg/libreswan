@@ -1,3 +1,14 @@
+libreswan (3.23-1) unstable; urgency=medium
+
+  [ Daniel Kahn Gillmor ]
+  * New upstream release
+  * drop patches already upstream, refresh remaining patches
+
+  [ Antony Antony ]
+  * tests/opportunistic fix, asymetric dnssec test
+
+ -- Daniel Kahn Gillmor <dkg@fifthhorseman.net>  Mon, 05 Feb 2018 15:47:04 -0500
+
 libreswan (3.22-4) unstable; urgency=medium
 
   * conflict with strongswan-libcharon (Closes: #886842)
