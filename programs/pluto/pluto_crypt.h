@@ -264,18 +264,18 @@ struct pluto_crypto_req_cont;	/* forward reference */
  *
  * struct msg_digest *md:
  *
- *      If applicable, the incomming packet that triggered the
+ *      If applicable, the incoming packet that triggered the
  *      requested crypto.  Re-keying, for instance, will not have this
  *      packet?
  *
  *      This function is responsible for either releasing or
- *      transfering ownership of the MD.
+ *      transferring ownership of the MD.
  *
  * struct pluto_crypto_req *r:
  *
  *	The results from the crypto operation.
  *
- *      This function is responsible for releasing or transfering the
+ *      This function is responsible for releasing or transferring the
  *      contents (and for "just knowing" the right contents in the
  *      union it should be using).
  *
